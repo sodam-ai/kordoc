@@ -765,7 +765,7 @@ async function resolveSectionPaths(zip: JSZip): Promise<string[]> {
 
   // fallback: section*.xml 직접 검색
   const sectionFiles = zip.file(/[Ss]ection\d+\.xml$/)
-  return sectionFiles.map(f => f.name).sort()
+  return sectionFiles.map(f => f.name).sort(compareSectionPaths)
 }
 
 function parseSectionPathsFromManifest(xml: string): string[] {
@@ -774,17 +774,12 @@ function parseSectionPathsFromManifest(xml: string): string[] {
   const items = doc.getElementsByTagName("opf:item")
   const spine = doc.getElementsByTagName("opf:itemref")
 
-  const isSectionId = (id: string) => /^s/i.test(id) || id.toLowerCase().includes("section")
   const idToHref = new Map<string, string>()
   for (let i = 0; i < items.length; i++) {
     const item = items[i]
     const id = item.getAttribute("id") || ""
-    let href = item.getAttribute("href") || ""
-    const mediaType = item.getAttribute("media-type") || ""
-    if (!isSectionId(id) && !mediaType.includes("xml")) continue
-    if (!href.startsWith("/") && !href.startsWith("Contents/") && isSectionId(id))
-      href = "Contents/" + href
-    idToHref.set(id, href)
+    const href = normalizeSectionHref(item.getAttribute("href") || "")
+    if (id && href) idToHref.set(id, href)
   }
 
   if (spine.length > 0) {
@@ -795,10 +790,21 @@ function parseSectionPathsFromManifest(xml: string): string[] {
     }
     if (ordered.length > 0) return ordered
   }
-  return Array.from(idToHref.entries())
-    .filter(([id]) => isSectionId(id))
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([, href]) => href)
+  return Array.from(idToHref.values()).sort(compareSectionPaths)
+}
+
+function normalizeSectionHref(href: string): string | null {
+  if (!href) return null
+  let normalized = href.replace(/^\/+/, "")
+  if (isPathTraversal(normalized)) return null
+  if (/^[Ss]ection\d+\.xml$/.test(normalized)) normalized = "Contents/" + normalized
+  return /(?:^|\/)[Ss]ection\d+\.xml$/.test(normalized) ? normalized : null
+}
+
+function compareSectionPaths(a: string, b: string): number {
+  const ai = Number(a.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+  const bi = Number(b.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+  return ai === bi ? a.localeCompare(b) : ai - bi
 }
 
 // ─── 헤딩 감지 (스타일 기반) ────────────────────────

@@ -53,6 +53,12 @@ describe("hmlToLatex — vec / bar", () => {
     const out = hmlToLatex("{ hat {x} }").replace(/\s+/g, "")
     assert.equal(out, "\\widehat{x}")
   })
+
+  it("바깥 중괄호 없는 bar 입력도 멈추지 않고 변환한다", () => {
+    const out = hmlToLatex("||bar {v}^{*}(u)-I _{δ} bar {v}^{*}(u)|| _{∞}").replace(/\s+/g, "")
+    assert.ok(out.includes("\\overline{v}"), out)
+    assert.ok(!out.includes("HULKBAR"), out)
+  })
 })
 
 describe("hmlToLatex — matrix / cases", () => {
@@ -68,6 +74,12 @@ describe("hmlToLatex — matrix / cases", () => {
     const out = hmlToLatex("{ cases { 1 & x>0 # 0 & x<=0 } }")
     assert.ok(out.includes("\\begin{cases}"))
     assert.ok(out.includes("\\end{cases}"))
+  })
+
+  it("바깥 중괄호 없는 cases 입력도 토큰을 소비한다", () => {
+    const out = hmlToLatex("cases { nI Δ t, λ=1, # I Δ t{1-λ^{n}} over {1-λ}, 0≤λ<1 }")
+    assert.ok(out.includes("\\begin{cases}"), out)
+    assert.ok(!out.includes("HULKCASE"), out)
   })
 })
 

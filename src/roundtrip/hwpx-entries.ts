@@ -17,11 +17,10 @@ export async function resolveSectionEntryNames(zip: JSZip): Promise<string[]> {
     const paths = sectionPathsFromManifest(xml).filter(p => zip.file(p) !== null)
     if (paths.length > 0) return paths
   }
-  return Object.keys(zip.files).filter(n => /[Ss]ection\d+\.xml$/.test(n)).sort()
+  return Object.keys(zip.files).filter(n => /[Ss]ection\d+\.xml$/.test(n)).sort(compareSectionPaths)
 }
 
 function sectionPathsFromManifest(xml: string): string[] {
-  const isSectionId = (id: string) => /^s/i.test(id) || id.toLowerCase().includes("section")
   const attr = (tag: string, name: string): string => {
     const m = tag.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`))
     return m ? (m[1] ?? m[2]) : ""
@@ -29,11 +28,8 @@ function sectionPathsFromManifest(xml: string): string[] {
   const idToHref = new Map<string, string>()
   for (const m of xml.matchAll(/<opf:item(\s(?:"[^"]*"|'[^']*'|[^>"'])*?)\/?>/g)) {
     const id = attr(m[1], "id")
-    let href = attr(m[1], "href")
-    const mediaType = attr(m[1], "media-type")
-    if (!isSectionId(id) && !mediaType.includes("xml")) continue
-    if (!href.startsWith("/") && !href.startsWith("Contents/") && isSectionId(id)) href = "Contents/" + href
-    if (id) idToHref.set(id, href)
+    const href = normalizeSectionHref(attr(m[1], "href"))
+    if (id && href) idToHref.set(id, href)
   }
   const ordered: string[] = []
   for (const m of xml.matchAll(/<opf:itemref(\s(?:"[^"]*"|'[^']*'|[^>"'])*?)\/?>/g)) {
@@ -41,8 +37,21 @@ function sectionPathsFromManifest(xml: string): string[] {
     if (href) ordered.push(href)
   }
   if (ordered.length > 0) return ordered
-  return Array.from(idToHref.entries())
-    .filter(([id]) => isSectionId(id))
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([, href]) => href)
+  return Array.from(idToHref.values()).sort(compareSectionPaths)
+}
+
+function normalizeSectionHref(href: string): string | null {
+  if (!href) return null
+  let normalized = href.replace(/\\/g, "/").replace(/^\/+/, "")
+  if (normalized.includes("\x00")) return null
+  if (/^[A-Za-z]:/.test(normalized)) return null
+  if (normalized.split("/").some(s => s === "..")) return null
+  if (/^[Ss]ection\d+\.xml$/.test(normalized)) normalized = "Contents/" + normalized
+  return /(?:^|\/)[Ss]ection\d+\.xml$/.test(normalized) ? normalized : null
+}
+
+function compareSectionPaths(a: string, b: string): number {
+  const ai = Number(a.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+  const bi = Number(b.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+  return ai === bi ? a.localeCompare(b) : ai - bi
 }

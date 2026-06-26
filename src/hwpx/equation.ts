@@ -209,13 +209,37 @@ function findBrackets(eqString: string, startIdx: number, direction: 0 | 1): [nu
  * `{` and return the outer `{...}` span.
  */
 function findOutterBrackets(eqString: string, startIdx: number): [number, number] {
-  let idx = startIdx
-  while (true) {
-    idx -= 1
-    if (idx < 0) throw new Error("cannot find bracket")
-    if (eqString[idx] === "{") break
+  const outer = findEnclosingBrackets(eqString, startIdx)
+  if (!outer) throw new Error("cannot find bracket")
+  return outer
+}
+
+/**
+ * Find the nearest `{...}` group that actually encloses `startIdx`.
+ * A previous closed group such as `_ { x } HULKBAR { y }` must not be
+ * treated as the outer wrapper for `HULKBAR`.
+ */
+function findEnclosingBrackets(eqString: string, startIdx: number): [number, number] | null {
+  let depth = 0
+  for (let idx = startIdx - 1; idx >= 0; idx--) {
+    const ch = eqString[idx]
+    if (ch === "}") {
+      depth += 1
+    } else if (ch === "{") {
+      if (depth > 0) {
+        depth -= 1
+        continue
+      }
+      try {
+        const [start, end] = findBrackets(eqString, idx, 1)
+        if (start === idx && end > startIdx) return [start, end]
+      } catch {
+        return null
+      }
+      return null
+    }
   }
-  return findBrackets(eqString, idx, 1)
+  return null
 }
 
 // ─── Rewrite passes ───────────────────────────────────────────────────────
@@ -282,8 +306,9 @@ function replaceAllMatrix(eqString: string): string {
         const elem = replaceElements(input.slice(eStart, eEnd))
         let beforeMat: string
         let afterMat: string
-        if (matElem.removeOutterBrackets) {
-          const [bStart, bEnd] = findOutterBrackets(input, cursor)
+        const outer = matElem.removeOutterBrackets ? findEnclosingBrackets(input, cursor) : null
+        if (outer && outer[1] >= eEnd) {
+          const [bStart, bEnd] = outer
           beforeMat = input.slice(0, bStart)
           afterMat = input.slice(bEnd)
         } else {
@@ -312,10 +337,11 @@ function replaceAllBar(eqString: string): string {
       if (cursor === -1) break
       try {
         const [eStart, eEnd] = findBrackets(input, cursor, 1)
-        const [bStart, bEnd] = findOutterBrackets(input, cursor)
         const elem = input.slice(eStart, eEnd)
-        const beforeBar = input.slice(0, bStart)
-        const afterBar = input.slice(bEnd)
+        const outer = findEnclosingBrackets(input, cursor)
+        const [replaceStart, replaceEnd] = outer && outer[1] >= eEnd ? outer : [cursor, eEnd]
+        const beforeBar = input.slice(0, replaceStart)
+        const afterBar = input.slice(replaceEnd)
         input = beforeBar + barElem + elem + afterBar
       } catch {
         return input

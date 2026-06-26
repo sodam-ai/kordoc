@@ -47,6 +47,28 @@ export function isPathTraversal(name: string): boolean {
   return segments.some(s => s === "..") || normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)
 }
 
+// ─── HWPX 섹션 href 해석 (parser/roundtrip 공용) ────────────────────
+
+/**
+ * manifest href를 본문 섹션 경로(`Contents/sectionN.xml`)로 정규화.
+ * 비본문 XML(header/script/settings)·path traversal·드라이브 경로는 null로 거른다.
+ * 백슬래시 구분자를 슬래시로 통일해 parser와 roundtrip이 동일한 목록을 만든다.
+ */
+export function normalizeSectionHref(href: string): string | null {
+  if (!href) return null
+  let normalized = href.replace(/\\/g, "/").replace(/^\/+/, "")
+  if (isPathTraversal(normalized)) return null
+  if (/^[Ss]ection\d+\.xml$/.test(normalized)) normalized = "Contents/" + normalized
+  return /(?:^|\/)[Ss]ection\d+\.xml$/.test(normalized) ? normalized : null
+}
+
+/** sectionN.xml을 N 숫자 순서로 정렬 (section10 > section2). */
+export function compareSectionPaths(a: string, b: string): number {
+  const ai = Number(a.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+  const bi = Number(b.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+  return ai === bi ? a.localeCompare(b) : ai - bi
+}
+
 // ─── ZIP 안전 로딩 (ZIP bomb 방지) ────────────────────
 
 /**

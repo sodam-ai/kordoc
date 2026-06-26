@@ -10,7 +10,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import { buildTable, convertTableToText, blocksToMarkdown, MAX_COLS, MAX_ROWS } from "../table/builder.js"
 import type { CellContext, IRBlock, IRCell, IRTable, DocumentMetadata, InternalParseResult, ParseOptions, ParseWarning, OutlineItem, InlineStyle, ExtractedImage } from "../types.js"
 import { HEADING_RATIO_H1, HEADING_RATIO_H2, HEADING_RATIO_H3 } from "../types.js"
-import { KordocError, isPathTraversal, sanitizeHref, precheckZipSize, stripDtd } from "../utils.js"
+import { KordocError, isPathTraversal, sanitizeHref, precheckZipSize, stripDtd, normalizeSectionHref, compareSectionPaths } from "../utils.js"
 // 테스트 호환성 re-export
 export { precheckZipSize } from "../utils.js"
 import { parsePageRange } from "../page-range.js"
@@ -791,20 +791,6 @@ function parseSectionPathsFromManifest(xml: string): string[] {
     if (ordered.length > 0) return ordered
   }
   return Array.from(idToHref.values()).sort(compareSectionPaths)
-}
-
-function normalizeSectionHref(href: string): string | null {
-  if (!href) return null
-  let normalized = href.replace(/^\/+/, "")
-  if (isPathTraversal(normalized)) return null
-  if (/^[Ss]ection\d+\.xml$/.test(normalized)) normalized = "Contents/" + normalized
-  return /(?:^|\/)[Ss]ection\d+\.xml$/.test(normalized) ? normalized : null
-}
-
-function compareSectionPaths(a: string, b: string): number {
-  const ai = Number(a.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
-  const bi = Number(b.match(/[Ss]ection(\d+)\.xml$/)?.[1] ?? Number.MAX_SAFE_INTEGER)
-  return ai === bi ? a.localeCompare(b) : ai - bi
 }
 
 // ─── 헤딩 감지 (스타일 기반) ────────────────────────

@@ -31,9 +31,10 @@ import {
 import {
   splitMarkdownUnits, normForMatch, sanitizeText, parseGfmTable, unescapeGfmCell, unescapeGfm, escapeGfm, summarize,
   replicateTableToHtml, replicateHtmlTable, parseHtmlTable, htmlCellInnerToLines, extractTopLevelTables,
+  AUTONUM_PREFIX_RE,
   type MdUnit,
 } from "./markdown-units.js"
-import { stripCellTokens, extractCellTokens } from "./table-patch.js"
+import { stripCellTokens, extractCellTokens, extractImgTags } from "./table-patch.js"
 import { replaceOleStream } from "./ole-surgeon.js"
 
 const require = createRequire(import.meta.url)
@@ -554,7 +555,7 @@ function patchParagraph(
     const origPrefix = block.text!.split(" ", 1)[0]
     const sp = newPlain.indexOf(" ")
     const newFirst = sp > 0 ? newPlain.slice(0, sp) : newPlain
-    if (newFirst === origPrefix || /^(?:[0-9０-９a-zA-Z가-힣]{1,6}[.)\]:]|[([][0-9０-９a-zA-Z가-힣]{1,6}[)\]][.:]?|[ⅰ-ⅹⅠ-Ⅹ①-⑮][.)\]:]?)$/u.test(newFirst)) {
+    if (newFirst === origPrefix || AUTONUM_PREFIX_RE.test(newFirst)) {
       newPlain = sp > 0 ? newPlain.slice(sp + 1) : ""
     } else {
       ctx.skipped.push({ reason: "자동번호 접두 식별 실패 — 번호 포함 텍스트로 적용 (뷰어에서 중복 표시 가능)", after: summarize(newPlain) })
@@ -618,11 +619,6 @@ function patchGfmCells(
 
 // ── HTML 표 (병합셀/줄바꿈 셀) — HWPX patchHtmlTableRaw 미러 ──
 
-/** <img> 태그 추출 (셀 내 이미지 변경 감지) */
-function extractImgTags5(inner: string): string {
-  return (inner.match(/<img\s(?:"[^"]*"|'[^']*'|[^>"'])*?>/gi) || []).join(" ")
-}
-
 /**
  * 병합셀/줄바꿈 셀 표 패치. builder의 tableToHtml 렌더를 좌표 추적 버전으로 재현해
  * 편집된 셀의 격자 좌표(=앵커 좌표)를 역산, scanTable.cells 앵커로 셀 문단을 치환한다.
@@ -666,7 +662,7 @@ function patchHtmlCells5(
       const origContent = htmlCellInnerToLines(oc.inner)
       const editedContent = htmlCellInnerToLines(ec.inner)
       if (origContent.hadNonText || editedContent.hadNonText) {
-        if (extractImgTags5(oc.inner) !== extractImgTags5(ec.inner)) {
+        if (extractImgTags(oc.inner) !== extractImgTags(ec.inner)) {
           skip("셀 내 이미지 변경은 미지원")
           continue
         }

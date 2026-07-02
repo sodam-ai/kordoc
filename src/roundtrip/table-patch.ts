@@ -170,7 +170,7 @@ function patchNestedTables(
   return applied
 }
 
-function extractImgTags(inner: string): string {
+export function extractImgTags(inner: string): string {
   return (inner.match(/<img\s(?:"[^"]*"|'[^']*'|[^>"'])*?>/gi) || []).join(" ")
 }
 

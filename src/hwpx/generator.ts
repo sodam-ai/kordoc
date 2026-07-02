@@ -16,6 +16,8 @@ import {
   levelIndent,
   mmToHwpunit,
 } from "./gongmun.js"
+import { fitRatioForFewerLines } from "./text-metrics.js"
+import { parseHtmlTable, htmlCellInnerToLines, extractTopLevelTables, type HtmlRowInfo } from "../roundtrip/markdown-units.js"
 
 const NS_SECTION = "http://www.hancom.co.kr/hwpml/2011/section"
 const NS_PARA = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -113,13 +115,15 @@ export async function markdownToHwpx(
   const theme = resolveTheme(options?.theme)
   const gongmun = options?.gongmun ? resolveGongmun(options.gongmun) : null
   const blocks = parseMarkdownToBlocks(markdown)
-  const sectionXml = blocksToSectionXml(blocks, theme, gongmun)
+  const gongmunList = gongmun ? precomputeGongmunList(blocks, gongmun) : null
+  const fit = gongmun && gongmunList ? computeGongmunFitPlan(blocks, gongmun, gongmunList) : null
+  const sectionXml = blocksToSectionXml(blocks, theme, gongmun, gongmunList, fit)
 
   const zip = new JSZip()
   zip.file("mimetype", "application/hwp+zip", { compression: "STORE" })
   zip.file("META-INF/container.xml", generateContainerXml())
   zip.file("Contents/content.hpf", generateManifest())
-  zip.file("Contents/header.xml", generateHeaderXml(theme, gongmun))
+  zip.file("Contents/header.xml", generateHeaderXml(theme, gongmun, fit?.variants ?? []))
   zip.file("Contents/section0.xml", sectionXml)
   // Preview/ — 한글 프로그램의 일부 버전(특히 macOS)이 존재 여부를 확인함
   zip.file("Preview/PrvText.txt", buildPrvText(blocks))
@@ -132,7 +136,8 @@ function buildPrvText(blocks: MdBlock[]): string {
   const lines: string[] = []
   let bytes = 0
   for (const b of blocks) {
-    const text = b.text || (b.rows ? b.rows.map(r => r.join(" ")).join("\n") : "")
+    let text = b.text || (b.rows ? b.rows.map(r => r.join(" ")).join("\n") : "")
+    if (b.type === "html_table") text = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
     if (!text) continue
     lines.push(text)
     bytes += text.length * 3
@@ -144,7 +149,7 @@ function buildPrvText(blocks: MdBlock[]): string {
 // ─── 마크다운 파싱 ───────────────────────────────────
 
 interface MdBlock {
-  type: "paragraph" | "heading" | "table" | "code_block" | "hr" | "blockquote" | "list_item"
+  type: "paragraph" | "heading" | "table" | "html_table" | "code_block" | "hr" | "blockquote" | "list_item"
   text?: string
   level?: number
   rows?: string[][]
@@ -191,6 +196,22 @@ function parseMarkdownToBlocks(md: string): MdBlock[] {
     if (headingMatch) {
       blocks.push({ type: "heading", text: headingMatch[2].trim(), level: headingMatch[1].length })
       i++; continue
+    }
+
+    // HTML 표 (병합·중첩 — kordoc parse가 병합/중첩표를 내보내는 형식)
+    if (/^<table[\s>]/i.test(line.trimStart())) {
+      const htmlLines: string[] = []
+      let depth = 0
+      while (i < lines.length) {
+        const l = lines[i]
+        htmlLines.push(l)
+        depth += (l.match(/<table[\s>]/gi) ?? []).length
+        depth -= (l.match(/<\/table>/gi) ?? []).length
+        i++
+        if (depth <= 0) break
+      }
+      blocks.push({ type: "html_table", text: htmlLines.join("\n") })
+      continue
     }
 
     // 테이블
@@ -302,20 +323,21 @@ function escapeXml(text: string): string {
     .replace(/"/g, "&quot;")
 }
 
-function generateRuns(text: string, defaultCharPr: number = CHAR_NORMAL): string {
+function generateRuns(text: string, defaultCharPr: number = CHAR_NORMAL, mapCharId?: (id: number) => number): string {
   const spans = parseInlineMarkdown(text)
   return spans.map(span => {
-    const charId = span.code || span.bold || span.italic ? spanToCharPrId(span) : defaultCharPr
+    let charId = span.code || span.bold || span.italic ? spanToCharPrId(span) : defaultCharPr
+    if (mapCharId) charId = mapCharId(charId)
     return `<hp:run charPrIDRef="${charId}"><hp:t>${escapeXml(span.text)}</hp:t></hp:run>`
   }).join("")
 }
 
-function generateParagraph(text: string, paraPrId: number = PARA_NORMAL, charPrId: number = CHAR_NORMAL): string {
+function generateParagraph(text: string, paraPrId: number = PARA_NORMAL, charPrId: number = CHAR_NORMAL, mapCharId?: (id: number) => number): string {
   if (paraPrId === PARA_CODE) {
     // 코드블록은 인라인 파싱 안 함
     return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${CHAR_CODE}"><hp:t>${escapeXml(text)}</hp:t></hp:run></hp:p>`
   }
-  const runs = generateRuns(text, charPrId)
+  const runs = generateRuns(text, charPrId, mapCharId)
   return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0">${runs}</hp:p>`
 }
 
@@ -377,7 +399,7 @@ function charPr(
   const effFont = bold ? 2 : fontId
   // 장평(ratio): 공문서 본문은 95%로 가로 압축 — 한두 글자만 다음 줄로 넘어가는
   // orphan을 줄여 한 줄에 담는다(실제 공문서 관행). 한글·라틴만, 나머지는 100.
-  return `      <hh:charPr id="${id}" height="${height}" textColor="${textColor}" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="0"${boldAttr}${italicAttr}>
+  return `      <hh:charPr id="${id}" height="${height}" textColor="${textColor}" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1"${boldAttr}${italicAttr}>
         <hh:fontRef hangul="${effFont}" latin="${effFont}" hanja="${effFont}" japanese="${effFont}" other="${effFont}" symbol="${effFont}" user="${effFont}"/>
         <hh:ratio hangul="${ratioPct}" latin="${ratioPct}" hanja="${ratioPct}" japanese="100" other="100" symbol="100" user="100"/>
         <hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
@@ -402,7 +424,7 @@ function paraPr(id: number, opts: { align?: string; spaceBefore?: number; spaceA
         <hh:autoSpacing eAsianEng="0" eAsianNum="0"/>
         <hh:margin><hc:intent value="${indent}" unit="HWPUNIT"/><hc:left value="${left}" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="${spaceBefore}" unit="HWPUNIT"/><hc:next value="${spaceAfter}" unit="HWPUNIT"/></hh:margin>
         <hh:lineSpacing type="PERCENT" value="${lineSpacing}"/>
-        <hh:border borderFillIDRef="0" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/>
+        <hh:border borderFillIDRef="1" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/>
       </hh:paraPr>`
 }
 
@@ -414,8 +436,81 @@ const GONGMUN_LIST_LEVELS = 8
 // 본문 크기 가운데정렬 단락(발신명의 등) — 항목단계 paraPr 다음 id
 const GONGMUN_CENTER = GONGMUN_LIST_BASE + GONGMUN_LIST_LEVELS
 
+// ─── 공문서 자동 장평(orphan 축소) ───────────────────
+// 기본 charPr 11종(0~10) 뒤에, 자동 장평이 필요한 문단용 변형 charPr를 붙인다.
+// 변형 vi번째 장평 r → charPr id = CHAR_VARIANT_BASE + vi×4 + (0 본문|1 볼드|2 이탤릭|3 볼드이탤릭)
+const CHAR_VARIANT_BASE = 11
+/** 공문서 본문 기본 장평(%) — 실제 공문서 관행 (v3.5.3) */
+const GONGMUN_BODY_RATIO = 95
+
+interface GongmunFitPlan {
+  /** blockIdx → 축소 장평(%) */
+  ratioByBlock: Map<number, number>
+  /** 등장한 고유 장평 목록(변형 charPr 발급 순서) */
+  variants: number[]
+}
+
+/** 렌더될 문자열(마크다운 강조 문법 제거) — 폭 계산용 */
+function plainRenderText(text: string): string {
+  return parseInlineMarkdown(text).map(s => s.text).join("")
+}
+
+/**
+ * 문단별 자동 장평 계획 — 어절 줄바꿈 시뮬레이션으로 "장평을 줄이면 한 줄을
+ * 아낄 수 있는" 문단을 찾아 95→minRatio 범위의 가장 큰 장평을 배정한다.
+ * 대상: 일반 문단·항목(list_item). 제목/가운데정렬/코드/인용/표는 제외.
+ */
+function computeGongmunFitPlan(
+  blocks: MdBlock[],
+  gongmun: ResolvedGongmun,
+  gongmunList: Map<number, { marker: string; depth: number }>,
+): GongmunFitPlan | null {
+  const minRatio = gongmun.autoFitMinRatio
+  if (minRatio === null || minRatio >= GONGMUN_BODY_RATIO) return null
+  const pageW = 59528 - mmToHwpunit(gongmun.margins.left) - mmToHwpunit(gongmun.margins.right)
+  const ratioByBlock = new Map<number, number>()
+  const variants: number[] = []
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i]
+    let text: string
+    let firstW: number
+    let contW: number
+    if (block.type === "list_item" && gongmunList.has(i)) {
+      const { marker, depth } = gongmunList.get(i)!
+      const content = plainRenderText(block.text || "")
+      text = marker ? `${marker} ${content}` : content
+      const { left, indent } = levelIndent(depth, gongmun.bodyHeight, gongmun.numbering)
+      // 음수 intent(내어쓰기): 첫 줄은 left에서, 둘째 줄부터 left+|intent|에서 시작
+      firstW = pageW - left - Math.max(indent, 0)
+      contW = pageW - left - Math.max(-indent, 0)
+    } else if (block.type === "paragraph") {
+      const raw = (block.text || "").trim()
+      if (/^<center>[\s\S]*<\/center>$/i.test(raw)) continue // 가운데정렬 — 대상 아님
+      text = plainRenderText(raw)
+      firstW = contW = pageW
+    } else {
+      continue
+    }
+    if (!text) continue
+    const r = fitRatioForFewerLines(text, firstW, contW, gongmun.bodyHeight, GONGMUN_BODY_RATIO, minRatio)
+    if (r === null) continue
+    ratioByBlock.set(i, r)
+    if (!variants.includes(r)) variants.push(r)
+  }
+  return ratioByBlock.size > 0 ? { ratioByBlock, variants } : null
+}
+
+/** fit 계획에 따른 charPr id 매퍼 — 본문 계열(0~3)만 변형으로 치환 */
+function variantMapper(fit: GongmunFitPlan, blockIdx: number): ((id: number) => number) | undefined {
+  const r = fit.ratioByBlock.get(blockIdx)
+  if (r === undefined) return undefined
+  const vi = fit.variants.indexOf(r)
+  return (id) => (id >= 0 && id <= 3 ? CHAR_VARIANT_BASE + vi * 4 + id : id)
+}
+
 /** charProperties 블록 생성 — 공문서 모드면 본문/제목 height를 표준값으로 */
-function buildCharProperties(theme: ResolvedTheme, gongmun: ResolvedGongmun | null): string {
+function buildCharProperties(theme: ResolvedTheme, gongmun: ResolvedGongmun | null, ratioVariants: number[] = []): string {
   // 비공문서(기존 동작): 본문 10pt
   let body = 1000, code = 900, h1 = 1800, h2 = 1400, h3 = 1200, h4 = 1100
   if (gongmun) {
@@ -427,7 +522,7 @@ function buildCharProperties(theme: ResolvedTheme, gongmun: ResolvedGongmun | nu
     h4 = Math.max(body - 100, 1300)
   }
   // 공문서 본문 장평 95%(orphan 압축). 비공문서·제목은 100 유지.
-  const bodyRatio = gongmun ? 95 : 100
+  const bodyRatio = gongmun ? GONGMUN_BODY_RATIO : 100
   const rows = [
     charPr(0, body, false, false, 0, theme.body, bodyRatio),
     charPr(1, body, true, false, 0, theme.body, bodyRatio),
@@ -441,6 +536,15 @@ function buildCharProperties(theme: ResolvedTheme, gongmun: ResolvedGongmun | nu
     charPr(CHAR_TABLE_HEADER, body, theme.tableHeaderBold, false, 0, theme.tableHeader),
     charPr(CHAR_QUOTE, body, false, true, 0, theme.quote),
   ]
+  // 자동 장평 변형 — 본문 계열(0~3)의 장평만 바꾼 복제본
+  for (const r of ratioVariants) {
+    rows.push(
+      charPr(rows.length, body, false, false, 0, theme.body, r),
+      charPr(rows.length + 1, body, true, false, 0, theme.body, r),
+      charPr(rows.length + 2, body, false, true, 0, theme.body, r),
+      charPr(rows.length + 3, body, true, true, 0, theme.body, r),
+    )
+  }
   return `<hh:charProperties itemCnt="${rows.length}">\n${rows.join("\n")}\n    </hh:charProperties>`
 }
 
@@ -484,10 +588,10 @@ function buildParaProperties(gongmun: ResolvedGongmun | null): string {
   return `<hh:paraProperties itemCnt="${base.length}">\n${base.join("\n")}\n    </hh:paraProperties>`
 }
 
-function generateHeaderXml(theme: ResolvedTheme, gongmun: ResolvedGongmun | null): string {
+function generateHeaderXml(theme: ResolvedTheme, gongmun: ResolvedGongmun | null, ratioVariants: number[] = []): string {
   // 본문 한글 글꼴 (공문서 gothic 프리셋이면 맑은 고딕)
   const bodyFace = gongmun?.bodyFont === "gothic" ? "맑은 고딕" : "함초롬바탕"
-  const charPropsXml = buildCharProperties(theme, gongmun)
+  const charPropsXml = buildCharProperties(theme, gongmun, ratioVariants)
   const paraPropsXml = buildParaProperties(gongmun)
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <hh:head xmlns:hh="${NS_HEAD}" xmlns:hp="${NS_PARA}" xmlns:hc="${NS_CORE}" version="1.4" secCnt="1">
@@ -543,25 +647,21 @@ function generateHeaderXml(theme: ResolvedTheme, gongmun: ResolvedGongmun | null
       </hh:fontface>
     </hh:fontfaces>
     <hh:borderFills itemCnt="2">
-      <hh:borderFill id="0" threeD="0" shadow="0" centerLine="0" breakCellSeparateLine="0">
+      <hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
         <hh:slash type="NONE" Crooked="0" isCounter="0"/>
         <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
         <hh:leftBorder type="NONE" width="0.1 mm" color="#000000"/>
         <hh:rightBorder type="NONE" width="0.1 mm" color="#000000"/>
         <hh:topBorder type="NONE" width="0.1 mm" color="#000000"/>
         <hh:bottomBorder type="NONE" width="0.1 mm" color="#000000"/>
-        <hh:diagonal type="NONE" width="0.1 mm" color="#000000"/>
-        <hh:fillInfo/>
       </hh:borderFill>
-      <hh:borderFill id="1" threeD="0" shadow="0" centerLine="0" breakCellSeparateLine="0">
+      <hh:borderFill id="2" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
         <hh:slash type="NONE" Crooked="0" isCounter="0"/>
         <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
         <hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
         <hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
         <hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
         <hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-        <hh:diagonal type="NONE" width="0.1 mm" color="#000000"/>
-        <hh:fillInfo/>
       </hh:borderFill>
     </hh:borderFills>
     ${charPropsXml}
@@ -644,7 +744,7 @@ function generateTable(rows: string[][], theme: ResolvedTheme): string {
       const runs = generateRuns(cell, headerCharPr)
       const p = `<hp:p paraPrIDRef="0" styleIDRef="0">${runs}</hp:p>`
       // <hp:tc> 필수 속성 + subList + cellAddr + cellSpan + cellSz + cellMargin
-      return `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="1">`
+      return `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="2">`
         + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${p}</hp:subList>`
         + `<hp:cellAddr colAddr="${colIdx}" rowAddr="${rowIdx}"/>`
         + `<hp:cellSpan colSpan="1" rowSpan="1"/>`
@@ -662,10 +762,119 @@ function generateTable(rows: string[][], theme: ResolvedTheme): string {
     + `<hp:inMargin left="510" right="510" top="141" bottom="141"/>`
     + trElements
 
-  const tbl = `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="0" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="1" noShading="0">${tblInner}</hp:tbl>`
+  const tbl = `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="0" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="2" noShading="0">${tblInner}</hp:tbl>`
 
   // 테이블은 paragraph 안의 run → 가 아니라 별도 p로 감쌈 (block-level inline-anchored)
   return `<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${tbl}</hp:run></hp:p>`
+}
+
+// ─── HTML 표 생성 (병합셀 colspan/rowspan + 중첩표 재귀) ───
+//
+// kordoc parse는 병합/중첩표를 <table><tr><th|td colspan rowspan>…</table> HTML로
+// 내보낸다. 그 출력을 다시 HWPX로 만들 때 구조를 보존한다 — parse → 편집 →
+// markdownToHwpx 라운드트립의 표 구멍을 막는 경로.
+
+interface PlacedHtmlCell {
+  r: number
+  c: number
+  colSpan: number
+  rowSpan: number
+  inner: string
+  isHeader: boolean
+}
+
+/** HTML 행 목록 → 그리드 배치 (colspan/rowspan 점유 반영) */
+function layoutHtmlRows(rows: HtmlRowInfo[]): { placed: PlacedHtmlCell[]; rowCnt: number; colCnt: number } {
+  const occupied = new Set<string>()
+  const placed: PlacedHtmlCell[] = []
+  let colCnt = 0
+  for (let r = 0; r < rows.length; r++) {
+    let c = 0
+    for (const cell of rows[r].cells) {
+      while (occupied.has(`${r},${c}`)) c++
+      const colSpan = Math.max(1, cell.colSpan)
+      const rowSpan = Math.max(1, cell.rowSpan)
+      placed.push({ r, c, colSpan, rowSpan, inner: cell.inner, isHeader: rows[r].tag === "th" })
+      for (let dr = 0; dr < rowSpan; dr++) {
+        for (let dc = 0; dc < colSpan; dc++) occupied.add(`${r + dr},${c + dc}`)
+      }
+      c += colSpan
+      colCnt = Math.max(colCnt, c)
+    }
+  }
+  return { placed, rowCnt: rows.length, colCnt }
+}
+
+/** HTML 엔티티 복원 (sanitizeText 이스케이프의 역변환) — &amp;는 마지막에 */
+function unescapeHtml(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+}
+
+/**
+ * HTML 표 원문 → <hp:tbl> XML. 병합셀은 cellSpan/cellAddr로, 셀 안 중첩표는
+ * subList 안에 재귀 생성한다. 파싱 불가면 null (호출부가 문단 폴백).
+ * @param totalWidth 표 전체 폭(HWPUNIT) — 중첩표는 부모 셀폭에 맞춰 축소
+ */
+function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, totalWidth: number = 44000): string | null {
+  const rows = parseHtmlTable(rawHtml)
+  if (!rows || rows.length === 0) return null
+  const { placed, rowCnt, colCnt } = layoutHtmlRows(rows)
+  if (rowCnt === 0 || colCnt === 0) return null
+
+  const colW = Math.floor(totalWidth / colCnt)
+  const cellH = 1500
+  const tblW = colW * colCnt
+  const tblId = nextTableId()
+  const useHeaderStyle = theme.tableHeader !== theme.body || theme.tableHeaderBold
+
+  const tcXmls = placed.map(cell => {
+    const headerCharPr = cell.isHeader && useHeaderStyle ? CHAR_TABLE_HEADER : CHAR_NORMAL
+    const { lines } = htmlCellInnerToLines(cell.inner)
+    const paras: string[] = lines.map(line =>
+      `<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="${headerCharPr}"><hp:t>${escapeXml(unescapeHtml(line))}</hp:t></hp:run></hp:p>`,
+    )
+    // 중첩표 — 셀폭(마진 제외)에 맞춰 재귀 생성. 셀 높이는 중첩표만큼 키움
+    // (한컴은 자동 확장하지만 초기 높이가 맞아야 다른 뷰어에서도 안 잘림)
+    let nestedH = 0
+    for (const nested of extractTopLevelTables(cell.inner)) {
+      const nestedXml = generateHtmlTableXml(nested, theme, Math.max(colW * cell.colSpan - 1020, 4000))
+      if (nestedXml) {
+        paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${nestedXml}</hp:run></hp:p>`)
+        nestedH += ((nested.match(/<tr[\s>]/gi) ?? []).length) * cellH + 300
+      }
+    }
+    if (paras.length === 0) {
+      paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="${headerCharPr}"><hp:t></hp:t></hp:run></hp:p>`)
+    }
+    const cellHeight = Math.max(cellH * cell.rowSpan, Math.max(lines.length, 1) * 800 + nestedH)
+    return `<hp:tc name="" header="${cell.isHeader ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="2">`
+      + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${paras.join("")}</hp:subList>`
+      + `<hp:cellAddr colAddr="${cell.c}" rowAddr="${cell.r}"/>`
+      + `<hp:cellSpan colSpan="${cell.colSpan}" rowSpan="${cell.rowSpan}"/>`
+      + `<hp:cellSz width="${colW * cell.colSpan}" height="${cellHeight}"/>`
+      + `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`
+      + `</hp:tc>`
+  })
+
+  // 행별로 tr 묶기 (placed는 행 순서 유지)
+  const trXmls: string[] = []
+  for (let r = 0; r < rowCnt; r++) {
+    const rowTcs = tcXmls.filter((_, i) => placed[i].r === r)
+    trXmls.push(`<hp:tr>${rowTcs.join("")}</hp:tr>`)
+  }
+
+  return `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="0" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="2" noShading="0">`
+    + `<hp:sz width="${tblW}" widthRelTo="ABSOLUTE" height="${cellH * rowCnt}" heightRelTo="ABSOLUTE" protect="0"/>`
+    + `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="0" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`
+    + `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`
+    + `<hp:inMargin left="510" right="510" top="141" bottom="141"/>`
+    + trXmls.join("")
+    + `</hp:tbl>`
 }
 
 // ─── 섹션 XML 생성 ──────────────────────────────────
@@ -699,14 +908,18 @@ function precomputeGongmunList(
   return result
 }
 
-function blocksToSectionXml(blocks: MdBlock[], theme: ResolvedTheme, gongmun: ResolvedGongmun | null): string {
+function blocksToSectionXml(
+  blocks: MdBlock[],
+  theme: ResolvedTheme,
+  gongmun: ResolvedGongmun | null,
+  gongmunList: Map<number, { marker: string; depth: number }> | null = gongmun ? precomputeGongmunList(blocks, gongmun) : null,
+  fit: GongmunFitPlan | null = null,
+): string {
   const paraXmls: string[] = []
   let isFirst = true
   // 순서 있는 목록 카운터 — indent 레벨별 별도 유지. 다른 블록 만나면 해당 레벨 리셋.
   const orderedCounters: Record<number, number> = {}
   let prevWasOrdered = false
-  // 공문서 모드 리스트 사전 처리
-  const gongmunList = gongmun ? precomputeGongmunList(blocks, gongmun) : null
 
   for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
     const block = blocks[blockIdx]
@@ -733,7 +946,7 @@ function blocksToSectionXml(blocks: MdBlock[], theme: ResolvedTheme, gongmun: Re
         if (ctr) {
           xml = generateParagraph(ctr[1].trim(), GONGMUN_CENTER)
         } else {
-          xml = generateParagraph(block.text || "")
+          xml = generateParagraph(block.text || "", PARA_NORMAL, CHAR_NORMAL, fit ? variantMapper(fit, blockIdx) : undefined)
         }
         break
       }
@@ -761,7 +974,7 @@ function blocksToSectionXml(blocks: MdBlock[], theme: ResolvedTheme, gongmun: Re
           const text = marker ? `${marker} ${content}` : content
           // 보고서(□○-) 모드의 1단계 □ 대제목은 굵게 — 정부 보고서 관행
           const listCharPr = gongmun.numbering === "report" && depth === 0 ? CHAR_BOLD : CHAR_NORMAL
-          xml = generateParagraph(text, GONGMUN_LIST_BASE + depth, listCharPr)
+          xml = generateParagraph(text, GONGMUN_LIST_BASE + depth, listCharPr, fit ? variantMapper(fit, blockIdx) : undefined)
           break
         }
         const indent = block.indent || 0
@@ -801,6 +1014,22 @@ function blocksToSectionXml(blocks: MdBlock[], theme: ResolvedTheme, gongmun: Re
           xml = generateTable(block.rows, theme)
         }
         break
+      case "html_table": {
+        const tbl = generateHtmlTableXml(block.text || "", theme)
+        if (tbl) {
+          if (isFirst) {
+            const secRun = `<hp:run charPrIDRef="0">${generateSecPr(gongmun)}<hp:t></hp:t></hp:run>`
+            paraXmls.push(`<hp:p paraPrIDRef="0" styleIDRef="0">${secRun}</hp:p>`)
+            isFirst = false
+          }
+          xml = `<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${tbl}</hp:run></hp:p>`
+        } else {
+          // 파싱 불가 — 태그 제거한 텍스트 문단 폴백 (원문 HTML을 그대로 싣지 않음)
+          const plain = (block.text || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+          xml = plain ? generateParagraph(plain) : ""
+        }
+        break
+      }
     }
 
     if (!xml) continue

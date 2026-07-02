@@ -20,7 +20,7 @@ import { markdownToHwpx, parseHwpx, patchHwpx } from "../src/index.js"
 
 // import.meta.dirname은 Node 20.11+ — Node 18 ESM 호환을 위해 fileURLToPath 사용
 const CORPUS = join(dirname(fileURLToPath(import.meta.url)), "..", "bench", "corpus")
-const DIRS = ["seoul", "korea-kr", "misc"]
+const DIRS = ["seoul", "korea-kr", "misc", "review"]
 const MARKER = "라운드트립검증"
 const SWEEP_LIMIT = process.env.KORDOC_E2E_FULL ? Infinity : 12
 

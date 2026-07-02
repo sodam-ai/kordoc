@@ -24,10 +24,11 @@
 import JSZip from "jszip"
 import { isLabelCell } from "./recognize.js"
 import { KordocError } from "../utils.js"
-import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion } from "./match.js"
+import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillValue } from "./match.js"
 import type { FormField } from "../types.js"
 import {
   scanSectionXml, buildParagraphSplices, buildRangeSplices, applySplices, paraTText, paraTextPureT,
+  allLinesegRemovalSplices,
   type ScanParagraph, type ScanCell, type ScanTable, type SpliceEdit,
 } from "../roundtrip/source-map.js"
 import { patchZipEntries } from "../roundtrip/zip-patch.js"
@@ -58,12 +59,14 @@ interface ParaEditLedger {
  * HWPX 원본을 직접 수정하여 서식 필드를 채움 — 스타일 100% 보존.
  *
  * @param hwpxBuffer 원본 HWPX 파일 버퍼
- * @param values 채울 값 맵 (라벨 → 값)
+ * @param values 채울 값 맵 (라벨 → 값). 값이 배열이면 같은 라벨의 등장 순서대로
+ *   하나씩 소진된다 — 2~30장 반복 양식·명부형 표(헤더+여러 데이터 행) 채우기용.
+ *   문자열이면 기존처럼 모든 등장에 동일값.
  * @returns HwpxFillResult
  */
 export async function fillHwpx(
   hwpxBuffer: ArrayBuffer,
-  values: Record<string, string>,
+  values: Record<string, FillValue>,
 ): Promise<HwpxFillResult> {
   const u8 = new Uint8Array(hwpxBuffer)
   const zip = await JSZip.loadAsync(hwpxBuffer)
@@ -77,6 +80,7 @@ export async function fillHwpx(
   }
 
   const normalizedValues = normalizeValues(values)
+  const cursor = new ValueCursor(normalizedValues)
   const matchedLabels = new Set<string>()
   /** splice 실패 회수를 위해 null 자리표시 허용 — 마지막에 filter */
   const filled: Array<FormField | null> = []
@@ -125,7 +129,7 @@ export async function fillHwpx(
         for (const cell of row) {
           for (const para of cell.paragraphs) {
             const text = matchText(para)
-            const result = fillInCellPatterns(text, normalizedValues, matchedLabels)
+            const result = fillInCellPatterns(text, cursor, matchedLabels)
             if (!result) continue
             const l = led(para)
             if (l.fullText !== undefined) continue
@@ -162,23 +166,32 @@ export async function fillHwpx(
 
           const normalizedCellLabel = normalizeLabel(labelText)
           if (!normalizedCellLabel) continue
-          const matchKey = findMatchingKey(normalizedCellLabel, normalizedValues)
+          const matchKey = findMatchingKey(normalizedCellLabel, cursor)
           if (matchKey === undefined) continue
-          const newValue = normalizedValues.get(matchKey)!
 
           if (patternApplied.has(valueCell)) {
             // 전략 0이 이미 어노테이션을 채움 — 값을 앞에 삽입 (어노테이션 보존)
             const target = valueCell.paragraphs.find(p => p.tRanges.length > 0) ?? valueCell.paragraphs[0]
             if (!target) continue
             const l = led(target)
-            if (l.fullText === undefined) {
-              l.ranges.push({ start: 0, end: 0, replacement: newValue + " " })
-              l.filledIdx.push(filled.length)
-              l.matchKeys.push(matchKey)
-            }
+            if (l.fullText !== undefined) continue
+            const newValue = cursor.consume(matchKey)
+            if (newValue === undefined) continue // 배열 값 소진 — 이후 등장은 채우지 않음
+            l.ranges.push({ start: 0, end: 0, replacement: newValue + " " })
+            l.filledIdx.push(filled.length)
+            l.matchKeys.push(matchKey)
+            matchedLabels.add(matchKey)
+            filled.push({
+              label: labelText.trim().replace(/[:：]\s*$/, ""),
+              value: newValue,
+              row: rowIdx,
+              col: colIdx,
+            })
           } else {
             const paras = valueCell.paragraphs
             if (paras.length === 0) continue
+            const newValue = cursor.consume(matchKey)
+            if (newValue === undefined) continue // 배열 값 소진
             // 나중 쓰기 우선 (v3.0 replaceCellText와 동일) — 기존 원장 덮어쓰기
             const l0 = led(paras[0])
             l0.fullText = newValue
@@ -190,14 +203,14 @@ export async function fillHwpx(
               lk.fullText = ""
               lk.ranges = []
             }
+            matchedLabels.add(matchKey)
+            filled.push({
+              label: labelText.trim().replace(/[:：]\s*$/, ""),
+              value: newValue,
+              row: rowIdx,
+              col: colIdx,
+            })
           }
-          matchedLabels.add(matchKey)
-          filled.push({
-            label: labelText.trim().replace(/[:：]\s*$/, ""),
-            value: newValue,
-            row: rowIdx,
-            col: colIdx,
-          })
         }
       }
 
@@ -213,10 +226,12 @@ export async function fillHwpx(
             const dataCells = table.rows[rowIdx]
             for (let colIdx = 0; colIdx < Math.min(headerCells.length, dataCells.length); colIdx++) {
               const headerLabel = normalizeLabel(cellLabelText(headerCells[colIdx]))
-              const matchKey = findMatchingKey(headerLabel, normalizedValues)
+              const matchKey = findMatchingKey(headerLabel, cursor)
               if (matchKey === undefined) continue
-              if (matchedLabels.has(matchKey)) continue
-              const newValue = normalizedValues.get(matchKey)!
+              // 스칼라: 첫 데이터 행만(기존 동작). 배열: 행마다 다음 값 소진(명부형 표)
+              if (!cursor.isArray(matchKey) && matchedLabels.has(matchKey)) continue
+              const newValue = cursor.consume(matchKey)
+              if (newValue === undefined) continue // 배열 값 소진
 
               const paras = dataCells[colIdx].paragraphs
               if (paras.length === 0) continue
@@ -253,9 +268,10 @@ export async function fillHwpx(
       if (existing?.fullText !== undefined) continue
       const text = matchText(para)
       for (const seg of scanInlineSegments(text)) {
-        const matchKey = findMatchingKey(normalizeLabel(seg.label), normalizedValues)
+        const matchKey = findMatchingKey(normalizeLabel(seg.label), cursor)
         if (matchKey === undefined) continue
-        const newValue = normalizedValues.get(matchKey)!
+        const newValue = cursor.consume(matchKey)
+        if (newValue === undefined) continue // 배열 값 소진
         // 빈 자리 삽입은 콜론·다음 라벨과 붙지 않게 공백 부착
         const replacement = seg.valueStart === seg.valueEnd
           ? padInsertion(text, seg.valueStart, newValue)
@@ -321,6 +337,9 @@ export async function fillHwpx(
     }
 
     if (splices.length > 0) {
+      // 텍스트가 바뀐 섹션은 줄 레이아웃 캐시(linesegarray)를 전부 비워 한컴 변조
+      // 경고·구버전 줄배치 렌더를 막는다 (patchHwpx와 동일 — 뷰어가 열 때 재계산)
+      splices.push(...allLinesegRemovalSplices(xml))
       replacements.set(sectionPaths[si], encoder.encode(applySplices(xml, splices)))
     }
   }

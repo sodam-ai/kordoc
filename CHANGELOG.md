@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-07-02
+
+### Added
+
+- **함초롬바탕 실측 텍스트 메트릭 + 줄바꿈 시뮬레이션 엔진** (`src/hwpx/text-metrics.ts`) —
+  한컴 공개 배포 함초롬바탕 정품 TTF의 advance를 전수 추출(한글 음절 11,172자
+  균일 0.97em, 숫자 0.55em, 온점·괄호 0.32em, Bold=Regular 폭 동일 확인)해
+  HWP 프로그램 없이 줄폭·줄바꿈을 계산한다. 어절(KEEP_WORD)/글자 단위 두 모델 +
+  한컴 금칙 처리(줄머리 금지 문자 밀어내기, 여는 괄호 줄끝 금지) 구현.
+  - **실측 검증**: `bench/verify-linebreak.mjs` 신설 — 서울 정보소통광장 실제
+    결재문서 45건의 `linesegarray`(한컴 계열 조판기가 계산한 줄 시작 오프셋)를
+    정답지로 대조, 정밀 폭 버킷(고정폭 글꼴)에서 **줄바꿈점 98% 일치**(56/57).
+    이 과정에서 확정: 공백=0.5em 고정(useFontSpace=0), 장평·자간은 공백에도
+    적용, 자간=글자폭×(1+sp/100), 시작금칙은 직전 1글자 동반 밀어내기.
+  - API: `measureTextWidth`, `simulateWrap`, `fitRatioForFewerLines`, `charWidthEm1000`
+- **공문서 문단별 자동 장평(`GongmunOptions.autoFit`, 기본 켜짐)** — 한두 글자
+  (짧은 꼬리)만 다음 줄로 넘어가는 문단을 찾아 그 문단만 장평 95→90% 범위에서
+  자동 축소해 한 줄에 담는다(공무원 실무 관행의 자동화). 전역 95%로는 못 잡던
+  orphan을 문단 단위로 해결 — 필요한 문단에만 변형 charPr을 발급하고 나머지는
+  그대로. `autoFit: false`로 끄거나 `{ minRatio }`로 하한 조정.
+- **HTML 표(병합·중첩) → HWPX 생성** — `markdownToHwpx`가 kordoc parse 출력
+  형식의 `<table>`(colspan/rowspan/중첩 `<table>`)을 구조 보존으로 생성한다.
+  그리드 배치(병합 점유 반영 cellAddr/cellSpan) + 셀 안 중첩표 재귀 생성.
+  parse → 편집 → markdownToHwpx 라운드트립에서 병합·중첩표가 살아남는다
+  (이전엔 HTML 태그가 문단 텍스트로 박혔음).
+- **다중값(배열) 채우기 — 2~30장 반복 양식·명부** — `fillHwpx`/`fillFormFields`/
+  `fillForm`의 values 값에 `string[]` 허용. 배열이면 같은 라벨의 등장 순서대로
+  하나씩 소진(반복 양식), 명부형 표(헤더+데이터 행)는 행마다 다음 값을 채운다.
+  소진 후 등장은 채우지 않음. 문자열(스칼라)은 기존과 동일(모든 등장 동일값,
+  명부는 첫 행만). CLI `fill`의 JSON values는 배열이 자연 투과.
+
+### Fixed
+
+- **fillHwpx·HwpxSession이 linesegarray를 제거하지 않던 문제** — 텍스트를 바꾸고
+  줄 레이아웃 캐시를 그대로 둬, 채운 문서를 한컴에서 열면 변조 경고가 뜨거나
+  옛 줄배치로 렌더될 수 있었다(줄바꿈 틀어짐). patchHwpx(v3.2.1)와 동일하게
+  수정된 섹션의 linesegarray를 전부 비운다 — 뷰어가 열 때 재계산. 무변경 문서는
+  기존대로 바이트 동일.
+- **생성 표 테두리가 뷰어에서 안 보이던 문제** — `borderFill` id를 0부터 매겨
+  1-based로 해석하는 뷰어(rhwp 등 한컴 규약 구현체)에서 셀의 테두리 참조가
+  무테두리 fill로 풀렸다. 실제 한컴 산출 파일 규약대로 1-based(1=무테두리,
+  2=SOLID)로 재번호하고 `centerLine` 속성을 불리언("0")에서 enum("NONE")으로
+  수정. `<hh:fillInfo/>`(비표준)·불필요한 diagonal 요소 제거.
+- **공문서 항목 내어쓰기 폭 실측화** — `markerWidth`를 문자 부류 근사(괄호
+  0.45em, 숫자 0.5em, 온점 0.25em)에서 함초롬바탕 실제 advance(0.32/0.55/0.32em)
+  기반으로 교체. `(1)` 마커 기준 내어쓰기 오차 약 0.2글자 제거 — 둘째 줄이
+  첫 줄 내용 첫 글자에 정확히 정렬된다.
+
+### Changed
+
+- `bench/collect-opengov.mjs` — 2026-07 정보소통광장 개편 대응(다운로드 링크에서
+  `dname=` 제거, 파일명이 `title-down` 요소로 이동). 첨부 `<li>` 블록 단위
+  (파일명, 원문 링크) 추출로 재작성 + 제목 포함/제외 정규식 필터 인자 추가.
+- `tests/roundtrip-e2e.test.ts` 코퍼스 디렉토리에 `review` 추가.
+
 ## [3.5.4] - 2026-06-30
 
 ### Fixed

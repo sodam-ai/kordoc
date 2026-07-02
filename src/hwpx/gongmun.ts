@@ -9,6 +9,8 @@
  * 프리셋 해석). 실제 XML 조립은 generator.ts가 한다.
  */
 
+import { charWidthEm1000, SPACE_EM_FIXED } from "./text-metrics.js"
+
 // ─── 옵션 타입 ──────────────────────────────────────
 
 export type GongmunPreset = "official" | "report" | "plan" | "notice" | "minutes"
@@ -40,6 +42,12 @@ export interface GongmunOptions {
   margins?: { top: number; bottom: number; left: number; right: number }
   /** 문서 제목(첫 h1)을 가운데 정렬. 기본 true (행정기관명·보고서 제목) */
   centerTitle?: boolean
+  /**
+   * 문단별 자동 장평 — 한두 글자(짧은 꼬리)만 다음 줄로 넘어가는 문단의 장평을
+   * 95→90%까지 자동 축소해 한 줄에 담는다(공무원 실무 관행의 자동화).
+   * false로 끄거나 minRatio(기본 90)로 하한 조정. 기본 켜짐.
+   */
+  autoFit?: boolean | { minRatio?: number }
 }
 
 export interface ResolvedGongmun {
@@ -50,6 +58,8 @@ export interface ResolvedGongmun {
   numbering: GongmunNumbering
   margins: { top: number; bottom: number; left: number; right: number }
   centerTitle: boolean
+  /** 자동 장평 하한(%) — null이면 끔 */
+  autoFitMinRatio: number | null
 }
 
 /** 공식 표준 여백(mm) — 편람 서식 작성방법 해설 / 시행규칙 별표4 */
@@ -85,6 +95,10 @@ export function resolveGongmun(opts: GongmunOptions): ResolvedGongmun {
   const preset = normalizeGongmunPreset(opts.preset)
   const d = PRESET_DEFAULTS[preset]
   const bodyPt = opts.bodyPt ?? d.bodyPt
+  const autoFitMinRatio =
+    opts.autoFit === false ? null
+    : typeof opts.autoFit === "object" ? Math.min(Math.max(opts.autoFit.minRatio ?? 90, 50), 99)
+    : 90
   return {
     preset,
     bodyFont: opts.bodyFont ?? "myeongjo",
@@ -93,6 +107,7 @@ export function resolveGongmun(opts: GongmunOptions): ResolvedGongmun {
     numbering: opts.numbering ?? d.numbering,
     margins: opts.margins ?? OFFICIAL_MARGINS,
     centerTitle: opts.centerTitle ?? true,
+    autoFitMinRatio,
   }
 }
 
@@ -147,28 +162,18 @@ export function reportMarker(depth: number): string {
   return REPORT_BULLETS[Math.min(depth, REPORT_BULLETS.length - 1)]
 }
 
-// 전각(全角) 부호 — 한글 1자 폭(=bodyHeight)으로 렌더되는 항목부호 문자.
-// 원문자(①~⑳, ㉮~㉻)·도형부호(□ ○ 등)·아래아(ㆍ). 한글 음절은 정규식으로 별도 판정.
-const MARKER_FULLWIDTH =
-  "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉮㉯㉰㉱㉲㉳㉴㉵㉶㉷㉸㉹㉺㉻□○◦▪◇△▶ㆍ"
-
 /**
- * 항목부호 문자열의 실제 렌더 폭(HWPUNIT) 근사 + 부호와 내용 사이 1타.
+ * 항목부호 문자열의 실제 렌더 폭(HWPUNIT) + 부호와 내용 사이 1타(공백 0.5em).
  * 내어쓰기(둘째 줄 정렬)의 기준값이다 — 실제 한컴 공문서를 디코드해 보면 |intent|가
  * 부호의 실제 폭과 같아야 둘째 줄이 첫 줄 내용 첫 글자에 맞는다. 부호마다 폭이 달라
  * (예: '1.'은 좁고 '가.'는 넓음) 고정값으로는 정렬을 맞출 수 없다.
- * 전각(한글·원문자·도형부호)=bodyHeight, 반각(숫자·영문)=절반, 온점/쉼표·괄호는 더 좁게.
+ * 폭은 함초롬바탕 실측 advance 테이블(text-metrics)로 계산한다 — 한글·원문자 0.97em,
+ * 숫자 0.55em, 온점 0.32em, 괄호 0.32em (기존 근사치는 괄호를 0.45em으로 과대평가).
  */
 export function markerWidth(marker: string, bodyHeight: number): number {
-  const ta = bodyHeight / 2 // 1타 = 반각 1자 폭
-  let w = 0
-  for (const c of marker) {
-    if (/[가-힣]/.test(c) || MARKER_FULLWIDTH.includes(c)) w += bodyHeight
-    else if (c === "." || c === ",") w += Math.round(bodyHeight * 0.25)
-    else if (c === "(" || c === ")") w += Math.round(bodyHeight * 0.45)
-    else w += Math.round(ta) // 숫자·영문 등 반각
-  }
-  return Math.round(w + ta) // +1타(부호와 내용 사이 간격)
+  let em = SPACE_EM_FIXED // 1타(부호와 내용 사이 공백, 0.5em)
+  for (const c of marker) em += charWidthEm1000(c.codePointAt(0)!)
+  return Math.round((em / 1000) * bodyHeight)
 }
 
 // ─── 단계별 들여쓰기(left/내어쓰기 indent) 계산 ──────

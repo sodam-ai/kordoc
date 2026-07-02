@@ -2,7 +2,7 @@
 
 import type { IRBlock, IRTable, FormField } from "../types.js"
 import { isLabelCell } from "./recognize.js"
-import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion } from "./match.js"
+import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillValue } from "./match.js"
 
 /** 필드 채우기 결과 */
 export interface FillResult {
@@ -19,6 +19,8 @@ export interface FillResult {
  *
  * @param blocks 원본 IRBlock[] (변경하지 않음 — deep clone)
  * @param values 채울 값 맵 (라벨 → 새 값). 라벨은 접두사 매칭 지원.
+ *   값이 배열이면 같은 라벨의 등장 순서대로 하나씩 소진(반복 양식·명부형 표),
+ *   문자열이면 모든 등장에 동일값.
  * @returns FillResult
  *
  * @example
@@ -34,7 +36,7 @@ export interface FillResult {
  */
 export function fillFormFields(
   blocks: IRBlock[],
-  values: Record<string, string>,
+  values: Record<string, FillValue>,
 ): FillResult {
   // deep clone — 원본 불변
   const cloned = structuredClone(blocks)
@@ -42,6 +44,7 @@ export function fillFormFields(
   const matchedLabels = new Set<string>()
 
   const normalizedValues = normalizeValues(values)
+  const cursor = new ValueCursor(normalizedValues)
 
   // 1) 인셀 패턴 먼저 (체크박스, 괄호 빈칸, 어노테이션) — 전략 2가 덮어쓰기 전에
   const patternFilledCells = new Set<string>()  // "r,c" 키
@@ -51,7 +54,7 @@ export function fillFormFields(
       for (let c = 0; c < block.table.cols; c++) {
         const cell = block.table.cells[r]?.[c]
         if (!cell) continue
-        const result = fillInCellPatterns(cell.text, normalizedValues, matchedLabels)
+        const result = fillInCellPatterns(cell.text, cursor, matchedLabels)
         if (result) {
           cell.text = result.text
           patternFilledCells.add(`${r},${c}`)
@@ -66,13 +69,13 @@ export function fillFormFields(
   // 2) 테이블 기반 필드 교체 (라벨-값 셀 패턴)
   for (const block of cloned) {
     if (block.type !== "table" || !block.table) continue
-    fillTable(block.table, normalizedValues, filled, matchedLabels, patternFilledCells)
+    fillTable(block.table, cursor, filled, matchedLabels, patternFilledCells)
   }
 
   // 3) 인라인 "라벨: 값" 패턴 교체
   for (const block of cloned) {
     if (block.type !== "paragraph" || !block.text) continue
-    const newText = fillInlineFields(block.text, normalizedValues, filled, matchedLabels)
+    const newText = fillInlineFields(block.text, cursor, filled, matchedLabels)
     if (newText !== block.text) block.text = newText
   }
 
@@ -83,7 +86,7 @@ export function fillFormFields(
 /** 테이블 셀에서 라벨-값 패턴을 찾아 값 교체 */
 function fillTable(
   table: IRTable,
-  values: Map<string, string>,
+  values: ValueCursor,
   filled: FormField[],
   matchedLabels: Set<string>,
   patternFilledCells?: Set<string>,
@@ -107,7 +110,8 @@ function fillTable(
       const matchKey = findMatchingKey(normalizedCellLabel, values)
       if (matchKey === undefined) continue
 
-      const newValue = values.get(matchKey)!
+      const newValue = values.consume(matchKey)
+      if (newValue === undefined) continue // 배열 값 소진 — 이후 등장은 채우지 않음
       // 이미 인셀 패턴이 처리된 셀이면 앞에 삽입 (어노테이션 보존)
       if (patternFilledCells?.has(`${r},${c + 1}`)) {
         valueCell.text = newValue + " " + valueCell.text
@@ -142,9 +146,11 @@ function fillTable(
         const headerLabel = normalizeLabel(headerCell.text)
         const matchKey = findMatchingKey(headerLabel, values)
         if (matchKey === undefined) continue
-        if (matchedLabels.has(matchKey)) continue
+        // 스칼라: 첫 데이터 행만(기존 동작). 배열: 행마다 다음 값 소진(명부형 표)
+        if (!values.isArray(matchKey) && matchedLabels.has(matchKey)) continue
 
-        const newValue = values.get(matchKey)!
+        const newValue = values.consume(matchKey)
+        if (newValue === undefined) continue // 배열 값 소진
         valueCell.text = newValue
         matchedLabels.add(matchKey)
         filled.push({
@@ -161,7 +167,7 @@ function fillTable(
 /** 인라인 "라벨: 값" 패턴 교체 — 한 줄 다중 라벨은 세그먼트 단위로 처리 */
 function fillInlineFields(
   text: string,
-  values: Map<string, string>,
+  values: ValueCursor,
   filled: FormField[],
   matchedLabels: Set<string>,
 ): string {
@@ -174,7 +180,8 @@ function fillInlineFields(
     const matchKey = findMatchingKey(normalizeLabel(seg.label), values)
     if (matchKey === undefined) continue
 
-    const newValue = values.get(matchKey)!
+    const newValue = values.consume(matchKey)
+    if (newValue === undefined) continue // 배열 값 소진
     matchedLabels.add(matchKey)
     filled.push({ label: seg.label.trim(), value: newValue, row: -1, col: -1 })
     out += text.slice(pos, seg.valueStart)

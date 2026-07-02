@@ -18,7 +18,7 @@ import JSZip from "jszip"
 import { parseHwpxDocument } from "../hwpx/parser.js"
 import type { IRBlock, IRTable, PatchOptions, PatchResult, PatchSkip, DiffResult } from "../types.js"
 import {
-  scanSectionXml, buildParagraphSplices, applySplices,
+  scanSectionXml, buildParagraphSplices, applySplices, allLinesegRemovalSplices,
   type SectionScan, type ScanTable, type SpliceEdit,
 } from "./source-map.js"
 import { patchZipEntries } from "./zip-patch.js"
@@ -28,7 +28,7 @@ import {
   type ParaMapping,
 } from "./patcher.js"
 import { applyCellEdit, stripCellTokens, extractCellTokens } from "./table-patch.js"
-import { splitMarkdownUnits, normForMatch, sanitizeText, summarize } from "./markdown-units.js"
+import { splitMarkdownUnits, normForMatch, sanitizeText, summarize, AUTONUM_PREFIX_RE } from "./markdown-units.js"
 
 // ─── 공개 타입 ───────────────────────────────────────
 
@@ -341,6 +341,9 @@ export class HwpxSession {
     try {
       for (let s = 0; s < st.scans.length; s++) {
         if (sectionSplices[s].length === 0) continue
+        // 텍스트가 바뀐 섹션은 줄 레이아웃 캐시(linesegarray)를 전부 비워 한컴 변조
+        // 경고·구버전 줄배치 렌더를 막는다 (patchHwpx와 동일 — 뷰어가 열 때 재계산)
+        sectionSplices[s].push(...allLinesegRemovalSplices(st.scans[s].xml))
         replacements.set(st.sectionPaths[s], encoder.encode(applySplices(st.scans[s].xml, sectionSplices[s])))
       }
     } catch (err) {
@@ -417,7 +420,7 @@ export class HwpxSession {
       const origPrefix = block.text!.split(" ", 1)[0]
       const sp = newPlain.indexOf(" ")
       const newFirst = sp > 0 ? newPlain.slice(0, sp) : newPlain
-      if (newFirst === origPrefix || /^(?:[0-9０-９a-zA-Z가-힣]{1,6}[.)\]:]|[([][0-9０-９a-zA-Z가-힣]{1,6}[)\]][.:]?|[ⅰ-ⅹⅠ-Ⅹ①-⑮][.)\]:]?)$/u.test(newFirst)) {
+      if (newFirst === origPrefix || AUTONUM_PREFIX_RE.test(newFirst)) {
         newPlain = sp > 0 ? newPlain.slice(sp + 1) : ""
       } else {
         skipped.push({ reason: "자동번호 접두 식별 실패 — 번호 포함 텍스트로 적용 (뷰어에서 중복 표시 가능)", after: summarize(newPlain) })

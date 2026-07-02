@@ -2,6 +2,61 @@
 
 import { LABEL_KEYWORDS } from "./recognize.js"
 
+/**
+ * 채울 값 — 문자열이면 같은 라벨 모든 등장에 동일값(단일 양식),
+ * 배열이면 등장 순서대로 하나씩 소진(2~30장 반복 양식·명부형 표).
+ */
+export type FillValue = string | string[]
+
+/**
+ * 다중값 커서 — 라벨별 값 소비 상태를 추적한다.
+ * 스칼라 값은 무한 반복(기존 동작), 배열 값은 적용 순서대로 소진되며
+ * 다 쓰면 available=false가 되어 이후 등장은 채우지 않는다.
+ */
+export class ValueCursor {
+  private nextIdx = new Map<string, number>()
+  constructor(private values: Map<string, FillValue>) {}
+
+  keys(): IterableIterator<string> {
+    return this.values.keys()
+  }
+
+  has(key: string): boolean {
+    return this.values.has(key)
+  }
+
+  isArray(key: string): boolean {
+    return Array.isArray(this.values.get(key))
+  }
+
+  /** 남은 값이 있으면 true (스칼라는 항상 true) */
+  available(key: string): boolean {
+    const v = this.values.get(key)
+    if (v === undefined) return false
+    return typeof v === "string" || (this.nextIdx.get(key) ?? 0) < v.length
+  }
+
+  /** 현재 값 미리보기 (소진 없음) */
+  peek(key: string): string | undefined {
+    const v = this.values.get(key)
+    if (v === undefined) return undefined
+    if (typeof v === "string") return v
+    const i = this.nextIdx.get(key) ?? 0
+    return i < v.length ? v[i] : undefined
+  }
+
+  /** 값 소비 — 배열이면 커서 전진, 소진 시 undefined */
+  consume(key: string): string | undefined {
+    const v = this.values.get(key)
+    if (v === undefined) return undefined
+    if (typeof v === "string") return v
+    const i = this.nextIdx.get(key) ?? 0
+    if (i >= v.length) return undefined
+    this.nextIdx.set(key, i + 1)
+    return v[i]
+  }
+}
+
 /** 라벨 정규화 — 콜론/공백/특수문자 제거, 비교용 */
 export function normalizeLabel(label: string): string {
   return label.trim().replace(/[:：\s()（）·]/g, "")
@@ -16,7 +71,7 @@ export function normalizeLabel(label: string): string {
  */
 export function findMatchingKey(
   cellLabel: string,
-  values: Map<string, string>,
+  values: { has(key: string): boolean; keys(): Iterable<string> },
 ): string | undefined {
   // 1) 정확 매칭
   if (values.has(cellLabel)) return cellLabel
@@ -68,7 +123,7 @@ export function isKeywordLabel(text: string): boolean {
  */
 export function fillInCellPatterns(
   cellText: string,
-  values: Map<string, string>,
+  values: ValueCursor,
   matchedLabels: Set<string>,
 ): { text: string; matches: Array<{ key: string; label: string; value: string }> } | null {
   let text = cellText
@@ -81,14 +136,14 @@ export function fillInCellPatterns(
       const label = prefix + suffix  // "일반" + "통" = "일반통"
       const normalizedLabel = normalizeLabel(label)
       // 정확 매칭 → 접두사만 매칭 순
-      const matchKey = values.has(normalizedLabel)
+      const matchKey = values.available(normalizedLabel)
         ? normalizedLabel
-        : values.has(normalizeLabel(prefix))
+        : values.available(normalizeLabel(prefix))
           ? normalizeLabel(prefix)
           : undefined
       if (matchKey === undefined) return match
 
-      const newValue = values.get(matchKey)!
+      const newValue = values.consume(matchKey)!
       matchedLabels.add(matchKey)
       matches.push({ key: matchKey, label, value: newValue })
       return `${prefix}(${newValue})${suffix}`
@@ -100,13 +155,14 @@ export function fillInCellPatterns(
     /□([가-힣A-Za-z]+)/g,
     (match, keyword: string) => {
       const normalizedKw = normalizeLabel(keyword)
-      const matchKey = values.has(normalizedKw) ? normalizedKw : undefined
+      const matchKey = values.available(normalizedKw) ? normalizedKw : undefined
       if (matchKey === undefined) return match
 
-      const val = values.get(matchKey)!
+      const val = values.peek(matchKey)!
       const isTruthy = ["☑", "✓", "✔", "v", "V", "true", "1", "yes", "o", "O"].includes(val.trim()) || val.trim() === ""
       if (!isTruthy) return match
 
+      values.consume(matchKey)
       matchedLabels.add(matchKey)
       matches.push({ key: matchKey, label: `□${keyword}`, value: "☑" })
       return `☑${keyword}`
@@ -120,10 +176,10 @@ export function fillInCellPatterns(
     /\(([가-힣A-Za-z]+)[:：]\s{1,}\)/g,
     (match, keyword: string) => {
       const normalizedKw = normalizeLabel(keyword)
-      const matchKey = values.has(normalizedKw) ? normalizedKw : undefined
+      const matchKey = values.available(normalizedKw) ? normalizedKw : undefined
       if (matchKey === undefined) return match
 
-      const newValue = values.get(matchKey)!
+      const newValue = values.consume(matchKey)!
       matchedLabels.add(matchKey)
       matches.push({ key: matchKey, label: keyword, value: newValue })
       return `(${keyword}：${newValue})`
@@ -196,8 +252,8 @@ export function padInsertion(text: string, pos: number, value: string): string {
 }
 
 /** 입력 values 맵을 정규화된 키로 변환 */
-export function normalizeValues(values: Record<string, string>): Map<string, string> {
-  const map = new Map<string, string>()
+export function normalizeValues(values: Record<string, FillValue>): Map<string, FillValue> {
+  const map = new Map<string, FillValue>()
   for (const [label, value] of Object.entries(values)) {
     map.set(normalizeLabel(label), value)
   }
@@ -206,9 +262,9 @@ export function normalizeValues(values: Record<string, string>): Map<string, str
 
 /** 매칭 안 된 라벨을 원본 키로 복원 */
 export function resolveUnmatched(
-  normalizedValues: Map<string, string>,
+  normalizedValues: Map<string, FillValue>,
   matchedLabels: Set<string>,
-  originalValues: Record<string, string>,
+  originalValues: Record<string, FillValue>,
 ): string[] {
   return [...normalizedValues.keys()]
     .filter(k => !matchedLabels.has(k))

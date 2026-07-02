@@ -59,11 +59,13 @@ describe("gongmun 순수 로직", () => {
     assert.equal(reportMarker(3), "ㆍ")
   })
 
-  it("markerWidth — 전각·반각·문장부호 폭 합산 + 1타(부호-내용 간격)", () => {
+  it("markerWidth — 함초롬바탕 실측 폭 합산 + 1타(부호-내용 간격)", () => {
     const body = 1500 // 15pt
-    assert.equal(markerWidth("1.", body), 1875) // 숫자750 + 온점375 + 1타750
-    assert.equal(markerWidth("가.", body), 2625) // 한글1500 + 온점375 + 1타750
-    assert.equal(markerWidth("①", body), 2250) // 원문자1500 + 1타750
+    // 실측 advance(em×1000): 숫자 550, 온점 320, 한글·원문자 970, 괄호 320, 공백 500
+    assert.equal(markerWidth("1.", body), Math.round(((550 + 320 + 500) / 1000) * body)) // 2055
+    assert.equal(markerWidth("가.", body), Math.round(((970 + 320 + 500) / 1000) * body)) // 2685
+    assert.equal(markerWidth("①", body), Math.round(((970 + 500) / 1000) * body)) // 2205
+    assert.equal(markerWidth("(1)", body), Math.round(((320 + 550 + 320 + 500) / 1000) * body)) // 2535
     // 한글 부호가 숫자 부호보다 넓다(고정값으로는 못 맞추는 차이)
     assert.ok(markerWidth("가.", body) > markerWidth("1.", body))
   })

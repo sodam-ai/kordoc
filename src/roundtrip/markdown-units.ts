@@ -356,6 +356,13 @@ export function parseHtmlTable(raw: string): HtmlRowInfo[] | null {
   return rows
 }
 
+/**
+ * 자동번호/글머리 접두 형식 — 끝 구두점 필수("1." "가)" "(2)") 또는 단일 원문자/로마자.
+ * 맨 단어 오인 방지. patcher/hwp5-patch/session이 공유한다 (편집 텍스트에서 접두 제거 판별).
+ */
+export const AUTONUM_PREFIX_RE =
+  /^(?:[0-9０-９a-zA-Z가-힣]{1,6}[.)\]:]|[([][0-9０-９a-zA-Z가-힣]{1,6}[)\]][.:]?|[ⅰ-ⅹⅠ-Ⅹ①-⑮][.)\]:]?)$/u
+
 /** HTML 셀 inner → 평문 라인 — <br> 분리, <img>/중첩표 토큰 제외 */
 export function htmlCellInnerToLines(inner: string): { lines: string[]; hadNonText: boolean } {
   let hadNonText = false

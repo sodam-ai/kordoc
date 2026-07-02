@@ -6,22 +6,23 @@
  * 스타일·이미지·표 구조·설정은 1바이트도 건드리지 않는다 (section XML 외
  * ZIP 엔트리는 원본 바이트 그대로, 변경 문단도 run 구조·charPr 보존).
  *
- * 지원: 문단/헤딩 텍스트 수정, 표 셀 텍스트 수정 (GFM·HTML·1x1·1열 표).
- * 미지원(graceful skip): 블록 추가/삭제/순서 변경, 표 구조 변경, 캡션·각주·
- * 머리말/꼬리말·이미지 변경. skipped[]에 사유와 함께 보고된다.
+ * 지원: 문단/헤딩 텍스트 수정, 표 셀 텍스트 수정 (GFM·HTML·1x1·1열 표),
+ * 문단 → GFM 표 인플레이스 변환 (v3.5 — table-insert.ts).
+ * 미지원(graceful skip): 블록 추가/삭제/순서 변경, 표 구조 변경(행/열/병합),
+ * 캡션·각주·머리말/꼬리말·이미지 변경. skipped[]에 사유와 함께 보고된다.
  */
 
 import JSZip from "jszip"
 import { parseHwpxDocument } from "../hwpx/parser.js"
 import { blocksToMarkdown } from "../table/builder.js"
 import { normalizedSimilarity } from "../diff/text-diff.js"
-import type { IRBlock, IRTable, PatchOptions, PatchResult, PatchSkip, DiffResult, BlockDiff } from "../types.js"
+import type { IRBlock, PatchOptions, PatchResult, PatchSkip, DiffResult, BlockDiff } from "../types.js"
 import {
   scanSectionXml, buildParagraphSplices, applySplices, allLinesegRemovalSplices, findElementEnd,
   type SectionScan, type ScanParagraph, type ScanCell, type ScanTable, type SpliceEdit,
 } from "./source-map.js"
 import { patchZipEntries } from "./zip-patch.js"
-import {
+import { AUTONUM_PREFIX_RE,
   splitMarkdownUnits, normForMatch, sanitizeText, unescapeGfm, summarize, parseGfmTable,
   type MdUnit,
 } from "./markdown-units.js"
@@ -529,7 +530,7 @@ function patchParagraphUnit(
     const sp = newPlain.indexOf(" ")
     const newFirst = sp > 0 ? newPlain.slice(0, sp) : newPlain
     // 번호 형식: 끝 구두점 필수("1." "가)" "(2)") 또는 단일 원문자/로마자 — 맨 단어 오인 방지
-    if (newFirst === origPrefix || /^(?:[0-9０-９a-zA-Z가-힣]{1,6}[.)\]:]|[([][0-9０-９a-zA-Z가-힣]{1,6}[)\]][.:]?|[ⅰ-ⅹⅠ-Ⅹ①-⑮][.)\]:]?)$/u.test(newFirst)) {
+    if (newFirst === origPrefix || AUTONUM_PREFIX_RE.test(newFirst)) {
       newPlain = sp > 0 ? newPlain.slice(sp + 1) : ""
     } else {
       ctx.skipped.push({ reason: "자동번호 접두 식별 실패 — 번호 포함 텍스트로 적용 (뷰어에서 중복 표시 가능)", after: summarize(newPlain) })

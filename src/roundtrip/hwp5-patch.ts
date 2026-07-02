@@ -781,7 +781,9 @@ function applyCellEdit5(
     }
   }
   if (newLines.length > nonEmpty.length) {
-    ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 마지막 문단에 병합 적용", after: summarize(after) })
+    ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 마지막 문단에 병합 적용", after: summarize(after), partial: true })
+  } else if (newLines.length < nonEmpty.length && nonEmpty.length > 1) {
+    ctx.skipped.push({ reason: "셀 내 줄 삭제는 문단 제거 미지원 — 빈 문단 잔존(뷰어에 빈 줄 표시 가능)", before: summarize(before), after: summarize(after), partial: true })
   }
   let staged = 0
   for (let i = 0; i < nonEmpty.length; i++) {

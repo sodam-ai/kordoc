@@ -177,6 +177,12 @@ function sanitizeText(text: string): string {
  * 레이아웃 테이블 감지 및 해체 — IRBlock 레벨에서 수행
  * 적은 행(≤3) + 셀 내 줄바꿈 다량 → table 블록을 paragraph 블록들로 분해
  * heading 감지 전에 호출해야 해체된 텍스트에 heading 감지 적용 가능
+ *
+ * 호출 정책(의도): HWP5 파서만 호출한다. 구형 HWP5 문서는 제목/본문을 표로
+ * 감싼 레이아웃 표가 흔하지만, HWPX는 그 관행이 드물고 무엇보다 patchHwpx/
+ * fillHwpx 무손실 라운드트립이 "파서 렌더 = 소스맵 표 서수" 대응에 의존하므로
+ * HWPX에서 표를 문단으로 해체하면 표 매핑이 깨진다. HWPX 적용은 코퍼스
+ * 전/후 정량 비교 + 라운드트립 e2e 검증이 선행되어야 한다.
  */
 export function flattenLayoutTables(blocks: IRBlock[]): IRBlock[] {
   const result: IRBlock[] = []

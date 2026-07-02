@@ -50,6 +50,8 @@ export interface ScanCell {
   paragraphs: ScanParagraph[]
   /** 셀 내부 중첩표 (문서 순서) */
   tables: ScanTable[]
+  /** <hp:cellAddr> 태그 범위 (자기닫힘=태그 전체, 펼친형=여는 태그) — rowAddr 재작성용 */
+  addrTagRange?: { start: number; end: number }
 }
 
 /** 스캔된 표 */
@@ -60,6 +62,8 @@ export interface ScanTable {
   topLevel: boolean
   /** 비어있지 않은 행들 (tr 순서) */
   rows: ScanCell[][]
+  /** rows[i]의 <hp:tr>...</hp:tr> XML 범위 (행 추가/삭제 splice용, rows와 정렬) */
+  rowRanges: { start: number; end: number }[]
   /** 앵커 좌표 → 셀 ("r,c") */
   cellByAnchor: Map<string, ScanCell>
 }
@@ -190,6 +194,7 @@ export function scanSectionXml(xml: string, sectionIndex: number): SectionScan {
   const paraStack: ScanParagraph[] = []
   const tableStack: ScanTable[] = []
   const rowStack: ScanCell[][] = []     // 테이블별 currentRow
+  const trStartStack: number[] = []     // 테이블별 진행 중 <hp:tr> 시작 위치 (-1 = 없음)
   const cellStack: ScanCell[] = []
   let pendingT: { para: ScanParagraph; contentStart: number } | null = null
   const ctrlSubStack: OpenCtrlSub[] = []
@@ -271,11 +276,17 @@ export function scanSectionXml(xml: string, sectionIndex: number): SectionScan {
       } else if (local === "tr") {
         const row = rowStack[rowStack.length - 1]
         const table = tableStack[tableStack.length - 1]
-        if (row && table && row.length > 0) table.rows.push(row)
+        if (row && table && row.length > 0) {
+          table.rows.push(row)
+          const trStart = trStartStack[trStartStack.length - 1]
+          if (trStart >= 0) table.rowRanges.push({ start: trStart, end: m.index + full.length })
+        }
         if (rowStack.length > 0) rowStack[rowStack.length - 1] = []
+        if (trStartStack.length > 0) trStartStack[trStartStack.length - 1] = -1
       } else if (local === "tbl") {
         const table = tableStack.pop()
         rowStack.pop()
+        trStartStack.pop()
         if (table) {
           finalizeTable(table)
           // 중첩표는 둘러싼 셀에 부착 (재귀 패치용), 셀이 없으면(머리말 등
@@ -327,6 +338,7 @@ export function scanSectionXml(xml: string, sectionIndex: number): SectionScan {
           const ra = parseInt(getAttr(attrsRaw, "rowAddr") || "", 10)
           if (!isNaN(ca)) cell.colAddr = ca
           if (!isNaN(ra)) cell.rowAddr = ra
+          cell.addrTagRange = { start: m.index, end: m.index + full.length }
         }
       } else if (local === "cellSpan") {
         const cell = cellStack[cellStack.length - 1]
@@ -383,6 +395,7 @@ export function scanSectionXml(xml: string, sectionIndex: number): SectionScan {
         start: m.index,
         topLevel: false,
         rows: [],
+        rowRanges: [],
         cellByAnchor: new Map(),
       }
       // 자기 자신 제외하고 판별
@@ -391,9 +404,11 @@ export function scanSectionXml(xml: string, sectionIndex: number): SectionScan {
       stack.push({ local, qname, contentStart })
       tableStack.push(table)
       rowStack.push([])
+      trStartStack.push(-1)
       if (table.topLevel) tables.push(table)
     } else if (local === "tr") {
       if (rowStack.length > 0) rowStack[rowStack.length - 1] = []
+      if (trStartStack.length > 0) trStartStack[trStartStack.length - 1] = m.index
     } else if (local === "tc") {
       cellStack.push({ colSpan: 1, rowSpan: 1, paragraphs: [], tables: [] })
     } else if (local === "cellAddr" || local === "cellSpan") {
@@ -405,6 +420,7 @@ export function scanSectionXml(xml: string, sectionIndex: number): SectionScan {
           const ra = parseInt(getAttr(attrsRaw, "rowAddr") || "", 10)
           if (!isNaN(ca)) cell.colAddr = ca
           if (!isNaN(ra)) cell.rowAddr = ra
+          cell.addrTagRange = { start: m.index, end: contentStart }
         } else {
           const cs = parseInt(getAttr(attrsRaw, "colSpan") || "1", 10)
           const rs = parseInt(getAttr(attrsRaw, "rowSpan") || "1", 10)

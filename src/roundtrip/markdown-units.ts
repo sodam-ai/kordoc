@@ -10,6 +10,7 @@
 
 import type { IRTable } from "../types.js"
 import { mapPuaText } from "../shared/pua.js"
+import { normalizedSimilarity } from "../diff/text-diff.js"
 
 // ─── 유닛 분할 ───────────────────────────────────────
 
@@ -86,6 +87,97 @@ export function splitMarkdownUnits(md: string): MdUnit[] {
   }
 
   return units
+}
+
+// ─── 정렬 (정확 일치 LCS + 갭 유사도 페어링) ─────────
+// 유닛(블록)과 표 행 양쪽에서 공용 — patcher.ts에서 이동 (v3.7)
+
+export type AlignedPair = [number | null, number | null]
+
+export function alignUnits(a: string[], b: string[]): AlignedPair[] {
+  const m = a.length, n = b.length
+  if (m * n > 4_000_000) {
+    // 대형 문서 보호 — dense LCS 불가. 공통 prefix/suffix만 정확 일치로 페어링하고
+    // 가운데 구간은 길이가 같을 때만 인덱스 페어링, 다르면(블록 추가/삭제) 전부
+    // 추가/삭제로 보고해 시프트 오적용(전 문단이 한 칸씩 밀려 덮어써짐)을 차단한다.
+    const result: AlignedPair[] = []
+    let pre = 0
+    while (pre < m && pre < n && a[pre] === b[pre]) { result.push([pre, pre]); pre++ }
+    let suf = 0
+    while (suf < m - pre && suf < n - pre && a[m - 1 - suf] === b[n - 1 - suf]) suf++
+    const aMid = m - pre - suf, bMid = n - pre - suf
+    if (aMid === bMid) {
+      for (let i = 0; i < aMid; i++) result.push([pre + i, pre + i])
+    } else {
+      for (let i = 0; i < aMid; i++) result.push([pre + i, null])
+      for (let j = 0; j < bMid; j++) result.push([null, pre + j])
+    }
+    for (let s = suf - 1; s >= 0; s--) result.push([m - 1 - s, n - 1 - s])
+    return result
+  }
+
+  // 정확 일치 LCS
+  const dp: Int32Array[] = Array.from({ length: m + 1 }, () => new Int32Array(n + 1))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+  const matches: [number, number][] = []
+  let i = m, j = n
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1] && dp[i][j] === dp[i - 1][j - 1] + 1) {
+      matches.push([i - 1, j - 1]); i--; j--
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) i--
+    else j--
+  }
+  matches.reverse()
+
+  // 갭 구간 페어링 — 양쪽 갭 크기가 같으면 위치 기반(전면 재작성 인정),
+  // 다르면 유사도 기반으로 수정/추가/삭제 구분
+  const result: AlignedPair[] = []
+  let ai = 0, bi = 0
+  const flushGap = (aEnd: number, bEnd: number) => {
+    if (aEnd - ai === bEnd - bi) {
+      while (ai < aEnd) result.push([ai++, bi++])
+      return
+    }
+    while (ai < aEnd && bi < bEnd) {
+      const sim = normalizedSimilarity(a[ai], b[bi])
+      if (sim >= 0.4) {
+        // 갭이 긴 쪽에 더 나은 후보가 있으면 현재 항목은 삭제/추가로 밀어낸다 —
+        // 비슷한 두 문단 중 하나를 지운 편집에서 남은 문단이 덮어써지는 것을 방지
+        if (aEnd - ai > bEnd - bi && bestSimInRange(a, ai + 1, ai + (aEnd - ai) - (bEnd - bi), b[bi]) > sim) {
+          result.push([ai++, null])
+        } else if (bEnd - bi > aEnd - ai && bestSimInRange(b, bi + 1, bi + (bEnd - bi) - (aEnd - ai), a[ai]) > sim) {
+          result.push([null, bi++])
+        } else {
+          result.push([ai++, bi++])
+        }
+      } else if (aEnd - ai >= bEnd - bi) result.push([ai++, null])
+      else result.push([null, bi++])
+    }
+    while (ai < aEnd) result.push([ai++, null])
+    while (bi < bEnd) result.push([null, bi++])
+  }
+  for (const [pi, pj] of matches) {
+    flushGap(pi, pj)
+    result.push([ai++, bi++])
+  }
+  flushGap(m, n)
+  return result
+}
+
+/** [from, to] 범위에서 target과의 최고 유사도 */
+function bestSimInRange(arr: string[], from: number, to: number, target: string): number {
+  let best = 0
+  for (let k = from; k <= to && k < arr.length; k++) {
+    const s = normalizedSimilarity(arr[k], target)
+    if (s > best) best = s
+  }
+  return best
 }
 
 // ─── builder.ts 텍스트 변환 재현 (드리프트 시 자기 검증으로 skip) ─────

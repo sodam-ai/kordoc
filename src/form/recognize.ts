@@ -14,6 +14,22 @@ export const LABEL_KEYWORDS = new Set([
   "등록기준지", "본적", "위임인", "청구사유", "소명자료",
 ])
 
+/** 콜론 없는 영문 라벨로 인정하는 단어 (한국 공문서 병기 관행) */
+const ENGLISH_LABEL_WORDS = new Set([
+  "name", "date", "address", "tel", "phone", "mobile", "fax", "email", "e-mail",
+  "dept", "department", "division", "title", "position", "grade", "rank",
+  "birth", "nationality", "sex", "gender", "signature", "sign", "seal",
+  "remarks", "note", "period", "place", "purpose", "reason", "amount", "total",
+  "sum", "qty", "quantity", "unit", "no", "id", "passport",
+])
+const ENGLISH_STOPWORDS = new Set(["of", "the", "and", "or", "in"])
+
+/** 수량/단위 값 형태 — "6개월"·"1억원"·"5백만원"·"2026년" 등은 라벨이 아님 */
+const NUMERIC_VALUE_RE = /^제?\d+(?:[.,]\d+)*[십백천만억조]*(?:원|명|건|개|회|부|매|장|점|호|번|년|월|일|시|분|초|개월|주년|차례|퍼센트)?$/
+
+/** 서술형 문장 어미 — 셀에 든 안내 문구를 라벨로 오인하지 않기 위한 컷 */
+const SENTENCE_ENDING_RE = /(?:입니다|합니다|습니다|하세요|십시오|시오|바랍니다|바람|할 것|할것|하며|하고|한다|된다|됨|음|임)$/
+
 /** 라벨처럼 보이는 셀인지 판별 */
 export function isLabelCell(text: string): boolean {
   // 각주 번호/특수문자 제거 후 판별 (예: "등록기준지²" → "등록기준지")
@@ -23,10 +39,29 @@ export function isLabelCell(text: string): boolean {
   for (const kw of LABEL_KEYWORDS) {
     if (trimmed.includes(kw)) return true
   }
-  // 짧은 한글 텍스트 (2-8자) + 숫자 없음 (공백/괄호/특수기호 허용)
-  if (/^[가-힣\s()（）·:：]+$/.test(trimmed) && trimmed.replace(/\s/g, "").length >= 2 && trimmed.replace(/\s/g, "").length <= 8 && !/\d/.test(trimmed)) return true
+  // 짧은 한글 텍스트 (2-12자, 공백/괄호/특수기호 허용) — 숫자는 낄 수 있으나
+  // ("연번1"·"제1항목"·"1차소속") 수량/단위 값·서술형 문구·법인명은 라벨이 아님.
+  // 9자 이상 확장 구간은 3어절 이상 제목성 문구를 컷 (자간 공백 라벨
+  // "업 체 명"류가 있는 8자 이하 기존 구간에는 어절 제한을 걸지 않는다)
+  const compact = trimmed.replace(/\s/g, "")
+  if (/^[가-힣0-9()（）·:：\-]+$/.test(compact)
+    && compact.length >= 2 && compact.length <= 12
+    && (compact.match(/[가-힣]/g) ?? []).length >= 2
+    && (compact.length <= 8 || trimmed.split(/\s+/).length <= 2)
+    && !NUMERIC_VALUE_RE.test(compact)
+    && !SENTENCE_ENDING_RE.test(trimmed)
+    && !/^[(（]주[)）]|^주식회사/.test(compact)) {
+    return true
+  }
   // "라벨:" 패턴
   if (/^[가-힣A-Za-z\s]+[:：]$/.test(trimmed)) return true
+  // 콜론 없는 영문 라벨 ("Name"·"Date of Birth") — 관행 단어 목록으로 한정
+  if (/^[A-Za-z][A-Za-z\s./&-]*$/.test(trimmed) && trimmed.length <= 20) {
+    const words = trimmed.toLowerCase().split(/[\s/&]+/).filter(w => w && !ENGLISH_STOPWORDS.has(w))
+    if (words.length >= 1 && words.length <= 3 && words.every(w => ENGLISH_LABEL_WORDS.has(w.replace(/\.$/, "")))) {
+      return true
+    }
+  }
   return false
 }
 

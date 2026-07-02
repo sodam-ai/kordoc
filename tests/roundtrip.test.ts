@@ -146,16 +146,14 @@ describe("patchHwpx: 표 셀 수정", () => {
     assert.equal(r2.markdown, edited)
   })
 
-  it("표 행 추가 → graceful skip (구조 변경 미지원)", async () => {
+  it("표 행 추가 → 인접 행 복제로 반영 (v3.7)", async () => {
     const { original, markdown } = await makeSynthetic()
-    const edited = markdown.replace("| 기간 | 김철수 | 6개월 |", "| 기간 | 김철수 | 6개월 |\n| 신규 | 행추가 | 불가 |")
+    const edited = markdown.replace("| 기간 | 김철수 | 6개월 |", "| 기간 | 김철수 | 6개월 |\n| 신규 | 행추가 | 반영 |")
     const res = await patchHwpx(original, edited)
     assert.ok(res.success)
-    assert.equal(res.applied, 0)
-    assert.ok(res.skipped.some(s => s.reason.includes("행 추가/삭제")), `skipped: ${JSON.stringify(res.skipped)}`)
-    // 원본 그대로 — 변경 미적용
+    assert.equal(res.applied, 1)
     const r2 = await reparse(res.data!)
-    assert.ok(!r2.markdown.includes("행추가"))
+    assert.equal(r2.markdown, edited)
   })
 })
 

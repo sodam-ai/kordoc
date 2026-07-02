@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-07-02
+
+### Added
+
+- **표 행 추가/삭제** (`patchHwpx`, `src/roundtrip/table-rows.ts`) — 편집 마크다운의
+  GFM/HTML 표 행 수가 원본과 달라도 이제 반영된다. 행 정렬(LCS)로 삽입/삭제/수정을
+  구분하고, 행 추가는 인접 행 `<hp:tr>`을 복제해 셀 텍스트만 교체(서식·테두리·높이
+  승계), 행 삭제는 `<hp:tr>` 제거. `rowCnt`·이후 행 `cellAddr rowAddr`·표 `hp:sz`
+  높이를 함께 갱신하고 복제 조각의 `linesegarray`는 제거한다.
+  - **보수적 게이트** (전부 통과해야 수행, 실패 시 표 전체 graceful skip): 세로
+    병합(rowSpan)이 변경 지점을 가로지르면 미지원, 삭제/서식기준 행에 개체(중첩표·
+    이미지·수식·필드) 포함 시 미지원, 셀 주소 표기 혼재 미지원, 편집 결과가 builder
+    렌더에서 변형되면(빈 행 드롭·첫 열 전파) 미지원.
+  - 실문서 검증: 결재문서 코퍼스 45건 행 추가 스윕 — GFM 6/9·HTML 34/45 클린 적용
+    (재파싱 잔차 0), 나머지는 사유와 함께 skip, 손상·예외 0. rhwp 렌더 육안 확인.
+- **채우기 두 경로 정합** (`fillFormFields` ↔ `fillHwpx`) — IR 경로의 병합 라벨셀
+  값 유실(silent) 수정: 라벨이 colSpan≥2면 값이 병합 플레이스홀더에 쓰여 렌더에서
+  사라지던 것을 hwpx 경로처럼 "라벨 span 뒤 같은 행의 실제 다음 셀"에 쓰도록 교정.
+  셀 안 중첩표 라벨도 재귀 채우기(depth 16, hwpx 경로와 동일). 전략2(명부형)의
+  병합 커버 칸 값 소진 차단. 두 경로 filled/unmatched 동등성 테스트 신설.
+- **라벨 인식 확장** (`isLabelCell`) — 숫자 낀 라벨("연번1"·"제1항목"·"1차소속"),
+  9~12자 한글 라벨("제1소위원회위원장"), 콜론 없는 영문 라벨("Name"·"Date of
+  Birth", 관행 단어 목록 한정) 인식. 가드: 수량/단위 값("6개월"·"1억원"·"5백만원")·
+  서술형 어미("해당없음")·법인명("(주)…")·9자 이상 구간의 3어절 이상 제목성 문구는
+  거부. 코퍼스 45건 정량: 380→386 필드(+8 전부 실제 라벨, −2 순수 오탐 제거).
+- **`PatchSkip.partial`** — "적용은 됐지만 편집 원형 그대로는 아님"(셀 내 줄 병합,
+  이미지 혼재 텍스트만 적용, 줄 삭제 시 빈 문단 잔존)을 완전 미적용 skip과 구분해
+  보고. HWPX·HWP5 공통. 셀 줄 삭제 시 빈 문단 잔존 보고 신설(기존 무보고).
+
+### Fixed
+
+- **중첩표 blocks 유실 방지** (`buildTableWithCellMeta`) — cellAddr·텍스트 매칭이
+  모두 실패한 셀(동일 텍스트 중복·스팬 불일치)의 중첩표/이미지 blocks가 조용히
+  사라지던 것에 서수(tc 순서) 3차 폴백 추가. 소스 tc 수와 격자 앵커 수가 1:1일
+  때만 발동(오부착 방지). 코퍼스 45건 markdown 해시 전/후 동일(무회귀).
+
+### Changed
+
+- `alignUnits`(정확 일치 LCS + 갭 유사도 페어링)를 `patcher.ts` →
+  `markdown-units.ts`로 이동 (표 행 정렬과 공용, patcher는 re-export 유지).
+- 수식+병합 표의 GFM 강등(builder)은 실측 결과 유지 — 코퍼스 표 217개 중 수식
+  포함 0건으로 완화 근거 없음. `flattenLayoutTables`의 hwp5-only 호출 정책과
+  파서 깊이 상수(hwpx 200=XML 요소 / hwp5 8=표 중첩 / filler 16=표 중첩)의
+  좌표계 차이를 주석으로 명문화.
+
 ## [3.6.0] - 2026-07-02
 
 ### Added

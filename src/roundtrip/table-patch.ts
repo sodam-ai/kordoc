@@ -1,5 +1,6 @@
 /**
- * 라운드트립 표 패치 — GFM/HTML/1x1/1열 표의 셀 단위 텍스트 치환.
+ * 라운드트립 표 패치 — GFM/HTML/1x1/1열 표의 셀 단위 텍스트 치환
+ * + GFM/HTML 표 행 추가/삭제 (v3.7, table-rows.ts).
  *
  * builder.ts 렌더링을 좌표 추적 버전으로 재현(markdown-units.ts)해 편집된 셀의
  * 격자 좌표를 역산하고, 소스맵의 cellAddr 앵커로 XML 셀을 찾아 문단 단위로
@@ -16,8 +17,9 @@ import {
   normForMatch, sanitizeText, escapeGfm, unescapeGfm, summarize,
   replicateGfmTable, parseGfmTable, unescapeGfmCell,
   replicateHtmlTable, replicateTableToHtml, parseHtmlTable, htmlCellInnerToLines, extractTopLevelTables,
-  type MdUnit,
+  type MdUnit, type HtmlRowInfo, type MappedCell,
 } from "./markdown-units.js"
+import { patchTableRows, type InsertCell } from "./table-rows.js"
 
 /** 표 패치에 필요한 컨텍스트 (patcher.ts PatchCtx의 부분집합) */
 export interface TablePatchCtx {
@@ -41,39 +43,103 @@ export function patchGfmTable(
   if (replica.length !== origRows.length || replica.some((row, r) => row.length !== origRows[r].length || row.some((c, j) => c.text !== origRows[r][j]))) {
     return skip("표 좌표 재현 불일치 — 매핑 신뢰 불가")
   }
-  if (editedRows.length !== origRows.length) return skip("표 행 추가/삭제는 미지원 (표 구조 변경)")
+  if (editedRows.length !== origRows.length) {
+    return patchGfmTableRows(table, scanTable, origRows, editedRows, replica, ctx, skip)
+  }
 
   let applied = 0
   for (let r = 0; r < origRows.length; r++) {
-    if (editedRows[r].length !== origRows[r].length) {
-      skip(`표 ${r + 1}행 열 수 변경은 미지원`)
-      continue
-    }
-    for (let c = 0; c < origRows[r].length; c++) {
-      if (origRows[r][c] === editedRows[r][c]) continue
-      const { gridR, gridC } = replica[r][c]
-      // 이미지/플레이스홀더 토큰은 본문 텍스트가 아님 — 변경 불가, 적용 시 제외
-      const origTokens = extractCellTokens(origRows[r][c])
-      const editedTokens = extractCellTokens(editedRows[r][c])
-      if (origTokens !== editedTokens) {
-        skip("셀 내 이미지 변경은 미지원")
-        continue
-      }
-      const newLines = unescapeGfmCell(stripCellTokens(editedRows[r][c]))
-        .split("\n").map(s => s.trim()).filter(Boolean)
-      const origLines = unescapeGfmCell(stripCellTokens(origRows[r][c]))
-        .split("\n").map(s => s.trim()).filter(Boolean)
-      const n = applyCellEdit(table, scanTable, gridR, gridC, newLines, ctx, origRows[r][c], editedRows[r][c], origLines.length)
-      if (n > 0 && origTokens) {
-        ctx.skipped.push({
-          reason: "셀 내 이미지·텍스트 혼재 — 텍스트만 적용 (이미지 인접 배치는 <br> 분리로 재현됨)",
-          before: summarize(origRows[r][c]), after: summarize(editedRows[r][c]),
-        })
-      }
-      applied += n
-    }
+    applied += patchGfmRowPair(table, scanTable, origRows, editedRows, replica, r, r, ctx, skip)
   }
   return applied
+}
+
+/** GFM 행 쌍 하나의 셀 단위 패치 (행 수 동일 경로와 행 연산의 매칭 행 공용) */
+function patchGfmRowPair(
+  table: IRTable, scanTable: ScanTable, origRows: string[][], editedRows: string[][],
+  replica: MappedCell[][], r: number, er: number, ctx: TablePatchCtx,
+  skip: (reason: string) => number,
+): number {
+  if (editedRows[er].length !== origRows[r].length) {
+    skip(`표 ${r + 1}행 열 수 변경은 미지원`)
+    return 0
+  }
+  let applied = 0
+  for (let c = 0; c < origRows[r].length; c++) {
+    if (origRows[r][c] === editedRows[er][c]) continue
+    const { gridR, gridC } = replica[r][c]
+    // 이미지/플레이스홀더 토큰은 본문 텍스트가 아님 — 변경 불가, 적용 시 제외
+    const origTokens = extractCellTokens(origRows[r][c])
+    const editedTokens = extractCellTokens(editedRows[er][c])
+    if (origTokens !== editedTokens) {
+      skip("셀 내 이미지 변경은 미지원")
+      continue
+    }
+    const newLines = unescapeGfmCell(stripCellTokens(editedRows[er][c]))
+      .split("\n").map(s => s.trim()).filter(Boolean)
+    const origLines = unescapeGfmCell(stripCellTokens(origRows[r][c]))
+      .split("\n").map(s => s.trim()).filter(Boolean)
+    const n = applyCellEdit(table, scanTable, gridR, gridC, newLines, ctx, origRows[r][c], editedRows[er][c], origLines.length)
+    if (n > 0 && origTokens) {
+      ctx.skipped.push({
+        reason: "셀 내 이미지·텍스트 혼재 — 텍스트만 적용 (이미지 인접 배치는 <br> 분리로 재현됨)",
+        before: summarize(origRows[r][c]), after: summarize(editedRows[er][c]), partial: true,
+      })
+    }
+    applied += n
+  }
+  return applied
+}
+
+/** GFM 표 행 추가/삭제 — table-rows 엔진에 GFM 도메인을 연결 */
+function patchGfmTableRows(
+  table: IRTable, scanTable: ScanTable, origRows: string[][], editedRows: string[][],
+  replica: MappedCell[][], ctx: TablePatchCtx,
+  skip: (reason: string) => number,
+): number {
+  // 행 연산은 마크다운 행 ↔ 격자 행 1:1일 때만 (빈 행 소실/라벨 전파/병합 없음)
+  if (replica.length !== table.rows || replica.some((row, r) => row.some(c => c.gridR !== r))) {
+    return skip("표 렌더 행과 격자 행 불일치 (빈 행/병합) — 행 추가/삭제 미지원")
+  }
+  if (table.cells.some(row => row.some(c => c && (c.colSpan > 1 || c.rowSpan > 1)))) {
+    return skip("병합 셀 표 — GFM 행 추가/삭제 미지원")
+  }
+  // 편집 결과가 builder 렌더로 안정 재현되는지 (빈 행 드롭/첫 열 전파가 일어나면 무손실 불가)
+  if (!gfmRenderStable(editedRows, table.cols)) {
+    return skip("행 변경 결과가 표 렌더에서 변형됨 (빈 행/첫 열 전파/열 수 불일치) — 미지원")
+  }
+  const key = (row: string[]) => row.join("\u0000")
+  return patchTableRows({
+    table, scanTable, ctx, skip,
+    origKeys: origRows.map(key),
+    editedKeys: editedRows.map(key),
+    editedCells: ei => {
+      const cells: InsertCell[] = []
+      for (const cellMd of editedRows[ei]) {
+        if (extractCellTokens(cellMd)) return null
+        const lines = unescapeGfmCell(cellMd).split("\n").map(s => s.trim()).filter(Boolean)
+        cells.push({ lines, colSpan: 1, rowSpan: 1 })
+      }
+      return cells
+    },
+    patchMatched: (oi, ei) => patchGfmRowPair(table, scanTable, origRows, editedRows, replica, oi, ei, ctx, skip),
+  })
+}
+
+/** 편집된 GFM 행렬이 builder 렌더에서 그대로 재현되는지 (행 연산 사전 검증) */
+function gfmRenderStable(editedRows: string[][], cols: number): boolean {
+  const sim: IRTable = {
+    rows: editedRows.length,
+    cols,
+    hasHeader: editedRows.length > 1,
+    cells: editedRows.map(row => {
+      const padded = row.length < cols ? [...row, ...Array(cols - row.length).fill("")] : row
+      return padded.map(md => ({ text: unescapeGfmCell(md), colSpan: 1, rowSpan: 1 }))
+    }),
+  }
+  const replica = replicateGfmTable(sim)
+  if (!replica || replica.length !== editedRows.length) return false
+  return replica.every((row, r) => row.length === editedRows[r].length && row.every((c, j) => c.text === editedRows[r][j]))
 }
 
 // ── HTML 표 ──
@@ -104,50 +170,91 @@ function patchHtmlTableRaw(
   }
   const editedRows = parseHtmlTable(editedRaw)
   if (!editedRows) return skip("편집된 HTML 표 파싱 실패")
-  if (editedRows.length !== replica.length) return skip("표 행 추가/삭제는 미지원 (표 구조 변경)")
+  if (editedRows.length !== replica.length) {
+    return patchHtmlTableRows(table, scanTable, replica, editedRows, ctx, skip, depth)
+  }
 
   let applied = 0
   for (let r = 0; r < replica.length; r++) {
-    if (editedRows[r].cells.length !== replica[r].cells.length) {
-      skip(`표 ${r + 1}행 셀 수 변경은 미지원`)
+    applied += patchHtmlRowPair(table, scanTable, replica, editedRows, r, r, ctx, skip, depth)
+  }
+  return applied
+}
+
+/** HTML 행 쌍 하나의 셀 단위 패치 (행 수 동일 경로와 행 연산의 매칭 행 공용) */
+function patchHtmlRowPair(
+  table: IRTable, scanTable: ScanTable, replica: HtmlRowInfo[], editedRows: HtmlRowInfo[],
+  r: number, er: number, ctx: TablePatchCtx,
+  skip: (reason: string) => number, depth: number,
+): number {
+  if (editedRows[er].cells.length !== replica[r].cells.length) {
+    skip(`표 ${r + 1}행 셀 수 변경은 미지원`)
+    return 0
+  }
+  let applied = 0
+  for (let c = 0; c < replica[r].cells.length; c++) {
+    const oc = replica[r].cells[c]
+    const ec = editedRows[er].cells[c]
+    if (oc.colSpan !== ec.colSpan || oc.rowSpan !== ec.rowSpan) {
+      skip(`셀 병합(colspan/rowspan) 변경은 미지원`)
       continue
     }
-    for (let c = 0; c < replica[r].cells.length; c++) {
-      const oc = replica[r].cells[c]
-      const ec = editedRows[r].cells[c]
-      if (oc.colSpan !== ec.colSpan || oc.rowSpan !== ec.rowSpan) {
-        skip(`셀 병합(colspan/rowspan) 변경은 미지원`)
+    if (oc.inner === ec.inner) continue
+
+    const origContent = htmlCellInnerToLines(oc.inner)
+    const editedContent = htmlCellInnerToLines(ec.inner)
+    if (origContent.hadNonText || editedContent.hadNonText) {
+      // 이미지 변경 불가
+      if (extractImgTags(oc.inner) !== extractImgTags(ec.inner)) {
+        skip("셀 내 이미지 변경은 미지원")
         continue
       }
-      if (oc.inner === ec.inner) continue
-
-      const origContent = htmlCellInnerToLines(oc.inner)
-      const editedContent = htmlCellInnerToLines(ec.inner)
-      if (origContent.hadNonText || editedContent.hadNonText) {
-        // 이미지 변경 불가
-        if (extractImgTags(oc.inner) !== extractImgTags(ec.inner)) {
-          skip("셀 내 이미지 변경은 미지원")
-          continue
-        }
-        // 중첩표 변경 → 셀의 중첩 소스맵으로 재귀 패치
-        const origTables = extractTopLevelTables(oc.inner)
-        const editedTables = extractTopLevelTables(ec.inner)
-        if (origTables.length !== editedTables.length) {
-          skip("셀 내 중첩표 추가/삭제는 미지원")
-          continue
-        }
-        if (origTables.join("\n") !== editedTables.join("\n")) {
-          applied += patchNestedTables(table, scanTable, oc, origTables, editedTables, ctx, skip, depth)
-        }
+      // 중첩표 변경 → 셀의 중첩 소스맵으로 재귀 패치
+      const origTables = extractTopLevelTables(oc.inner)
+      const editedTables = extractTopLevelTables(ec.inner)
+      if (origTables.length !== editedTables.length) {
+        skip("셀 내 중첩표 추가/삭제는 미지원")
+        continue
       }
-      // 텍스트 라인 변경 (중첩표/이미지 제외분)
-      if (origContent.lines.join("\n") !== editedContent.lines.join("\n")) {
-        const newLines = editedContent.lines.map(l => unescapeGfm(l))
-        applied += applyCellEdit(table, scanTable, oc.gridR!, oc.gridC!, newLines, ctx, oc.inner, ec.inner, origContent.lines.length)
+      if (origTables.join("\n") !== editedTables.join("\n")) {
+        applied += patchNestedTables(table, scanTable, oc, origTables, editedTables, ctx, skip, depth)
       }
+    }
+    // 텍스트 라인 변경 (중첩표/이미지 제외분)
+    if (origContent.lines.join("\n") !== editedContent.lines.join("\n")) {
+      const newLines = editedContent.lines.map(l => unescapeGfm(l))
+      applied += applyCellEdit(table, scanTable, oc.gridR!, oc.gridC!, newLines, ctx, oc.inner, ec.inner, origContent.lines.length)
     }
   }
   return applied
+}
+
+/** HTML 표 행 추가/삭제 — table-rows 엔진에 HTML 도메인을 연결 */
+function patchHtmlTableRows(
+  table: IRTable, scanTable: ScanTable, replica: HtmlRowInfo[], editedRows: HtmlRowInfo[],
+  ctx: TablePatchCtx, skip: (reason: string) => number, depth: number,
+): number {
+  // 행 연산은 렌더 행 ↔ 격자 행 1:1일 때만 (병합으로 소실된 행 없음)
+  if (replica.length !== table.rows || replica.some((row, r) => row.cells.some(c => c.gridR !== r))) {
+    return skip("표 렌더 행과 격자 행 불일치 (병합 소실 행) — 행 추가/삭제 미지원")
+  }
+  const key = (row: HtmlRowInfo) =>
+    row.cells.map(c => `${c.colSpan}x${c.rowSpan}:${c.inner}`).join("\u0000")
+  return patchTableRows({
+    table, scanTable, ctx, skip,
+    origKeys: replica.map(key),
+    editedKeys: editedRows.map(key),
+    editedCells: ei => {
+      const cells: InsertCell[] = []
+      for (const cell of editedRows[ei].cells) {
+        const content = htmlCellInnerToLines(cell.inner)
+        if (content.hadNonText) return null
+        cells.push({ lines: content.lines.map(l => unescapeGfm(l)), colSpan: cell.colSpan, rowSpan: cell.rowSpan })
+      }
+      return cells
+    },
+    patchMatched: (oi, ei) => patchHtmlRowPair(table, scanTable, replica, editedRows, oi, ei, ctx, skip, depth),
+  })
 }
 
 /** 셀 내 중첩표 k번째 IRTable/ScanTable 쌍을 찾아 재귀 패치 */
@@ -293,7 +400,7 @@ export function applyCellEdit(
     splices.push(...sp)
     sectionIndex = target.sectionIndex
     if (newLines.length > 1) {
-      ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 한 문단으로 병합 적용", after: summarize(after) })
+      ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 한 문단으로 병합 적용", after: summarize(after), partial: true })
     }
   } else {
     // 라인 → 문단 순서 매핑
@@ -308,7 +415,10 @@ export function applyCellEdit(
       }
     }
     if (newLines.length > nonEmpty.length) {
-      ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 마지막 문단에 병합 적용", after: summarize(after) })
+      ctx.skipped.push({ reason: "셀 내 줄 추가는 문단 생성 미지원 — 마지막 문단에 병합 적용", after: summarize(after), partial: true })
+    } else if (newLines.length < nonEmpty.length && nonEmpty.length > 1) {
+      // 텍스트는 편집대로 반영되지만 문단 자체는 제거하지 못함 — 뷰어에서 빈 줄로 보일 수 있음
+      ctx.skipped.push({ reason: "셀 내 줄 삭제는 문단 제거 미지원 — 빈 문단 잔존(뷰어에 빈 줄 표시 가능)", before: summarize(before), after: summarize(after), partial: true })
     }
     for (let i = 0; i < nonEmpty.length; i++) {
       // assigned는 sanitize된 마크다운 도메인, nonEmpty[i].text는 XML 원문 — 정규화

@@ -1,6 +1,6 @@
 /** 양식 서식 필드 값 채우기 — IRBlock[] 기반 in-place 교체 */
 
-import type { IRBlock, IRTable, FormField } from "../types.js"
+import type { IRBlock, IRCell, IRTable, FormField } from "../types.js"
 import { isLabelCell } from "./recognize.js"
 import { normalizeLabel, findMatchingKey, normalizeValues, resolveUnmatched, isKeywordLabel, fillInCellPatterns, scanInlineSegments, padInsertion, ValueCursor, type FillValue } from "./match.js"
 
@@ -46,18 +46,20 @@ export function fillFormFields(
   const normalizedValues = normalizeValues(values)
   const cursor = new ValueCursor(normalizedValues)
 
+  // 표 수집 — 중첩표 포함 DFS (hwpx 경로 collectTables와 동일하게 depth 16)
+  const allTables = collectIRTables(cloned, 0)
+
   // 1) 인셀 패턴 먼저 (체크박스, 괄호 빈칸, 어노테이션) — 전략 2가 덮어쓰기 전에
-  const patternFilledCells = new Set<string>()  // "r,c" 키
-  for (const block of cloned) {
-    if (block.type !== "table" || !block.table) continue
-    for (let r = 0; r < block.table.rows; r++) {
-      for (let c = 0; c < block.table.cols; c++) {
-        const cell = block.table.cells[r]?.[c]
+  const patternFilledCells = new Set<IRCell>()
+  for (const table of allTables) {
+    for (let r = 0; r < table.rows; r++) {
+      for (let c = 0; c < table.cols; c++) {
+        const cell = table.cells[r]?.[c]
         if (!cell) continue
         const result = fillInCellPatterns(cell.text, cursor, matchedLabels)
         if (result) {
           cell.text = result.text
-          patternFilledCells.add(`${r},${c}`)
+          patternFilledCells.add(cell)
           for (const m of result.matches) {
             filled.push({ label: m.label, value: m.value, row: r, col: c })
           }
@@ -67,9 +69,8 @@ export function fillFormFields(
   }
 
   // 2) 테이블 기반 필드 교체 (라벨-값 셀 패턴)
-  for (const block of cloned) {
-    if (block.type !== "table" || !block.table) continue
-    fillTable(block.table, cursor, filled, matchedLabels, patternFilledCells)
+  for (const table of allTables) {
+    fillTable(table, cursor, filled, matchedLabels, patternFilledCells)
   }
 
   // 3) 인라인 "라벨: 값" 패턴 교체
@@ -83,24 +84,71 @@ export function fillFormFields(
   return { blocks: cloned, filled, unmatched }
 }
 
+/** 중첩표 포함 표 수집 — 문서 순서 DFS (hwpx 경로 collectTables와 동일 규칙) */
+function collectIRTables(blocks: IRBlock[], depth: number): IRTable[] {
+  if (depth > 16) return []
+  const out: IRTable[] = []
+  for (const block of blocks) {
+    if (block.type !== "table" || !block.table) continue
+    out.push(block.table)
+    for (const row of block.table.cells) {
+      for (const cell of row) {
+        if (cell?.blocks?.length) out.push(...collectIRTables(cell.blocks, depth + 1))
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * 병합으로 덮인 격자 좌표("r,c") — 앵커가 아닌 플레이스홀더 위치.
+ * builder 렌더는 이 칸을 그리지 않으므로 여기 쓴 값은 조용히 사라진다.
+ */
+function coveredPositions(table: IRTable): Set<string> {
+  const covered = new Set<string>()
+  for (let r = 0; r < table.rows; r++) {
+    for (let c = 0; c < table.cols; c++) {
+      if (covered.has(`${r},${c}`)) continue
+      const cell = table.cells[r]?.[c]
+      if (!cell) continue
+      for (let dr = 0; dr < cell.rowSpan; dr++) {
+        for (let dc = 0; dc < cell.colSpan; dc++) {
+          if (dr === 0 && dc === 0) continue
+          if (r + dr < table.rows && c + dc < table.cols) covered.add(`${r + dr},${c + dc}`)
+        }
+      }
+      c += cell.colSpan - 1
+    }
+  }
+  return covered
+}
+
 /** 테이블 셀에서 라벨-값 패턴을 찾아 값 교체 */
 function fillTable(
   table: IRTable,
   values: ValueCursor,
   filled: FormField[],
   matchedLabels: Set<string>,
-  patternFilledCells?: Set<string>,
+  patternFilledCells?: Set<IRCell>,
 ): void {
   if (table.cols < 2) return
+  const covered = coveredPositions(table)
 
-  // 전략 1: 인접 라벨-값 셀 패턴
+  // 전략 1: 인접 라벨-값 셀 패턴 — 값 셀은 라벨 span 뒤 같은 행의 다음 앵커
+  // (hwpx 경로의 '다음 tc'와 동일. 병합 플레이스홀더에 쓰면 렌더에서 사라짐)
   for (let r = 0; r < table.rows; r++) {
-    for (let c = 0; c < table.cols - 1; c++) {
+    for (let c = 0; c < table.cols; c++) {
+      if (covered.has(`${r},${c}`)) continue
       const labelCell = table.cells[r][c]
-      const valueCell = table.cells[r][c + 1]
-      if (!labelCell || !valueCell) continue
+      if (!labelCell) continue
 
       if (!isLabelCell(labelCell.text)) continue
+
+      let vc = c + labelCell.colSpan
+      while (vc < table.cols && covered.has(`${r},${vc}`)) vc++
+      if (vc >= table.cols) continue
+      const valueCell = table.cells[r][vc]
+      if (!valueCell) continue
 
       if (isKeywordLabel(valueCell.text)) continue
 
@@ -113,7 +161,7 @@ function fillTable(
       const newValue = values.consume(matchKey)
       if (newValue === undefined) continue // 배열 값 소진 — 이후 등장은 채우지 않음
       // 이미 인셀 패턴이 처리된 셀이면 앞에 삽입 (어노테이션 보존)
-      if (patternFilledCells?.has(`${r},${c + 1}`)) {
+      if (patternFilledCells?.has(valueCell)) {
         valueCell.text = newValue + " " + valueCell.text
       } else {
         valueCell.text = newValue
@@ -140,6 +188,8 @@ function fillTable(
 
     for (let r = 1; r < table.rows; r++) {
       for (let c = 0; c < table.cols; c++) {
+        // 병합 플레이스홀더에 쓰면 사라지고 값만 소진됨 — 앵커만 채움
+        if (covered.has(`${r},${c}`)) continue
         const headerCell = headerRow[c]
         const valueCell = table.cells[r]?.[c]
         if (!headerCell || !valueCell) continue

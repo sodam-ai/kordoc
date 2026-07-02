@@ -27,7 +27,10 @@ function clampSpan(val: number, max: number): number {
   return Math.max(1, Math.min(val, max))
 }
 
-/** XML DOM 재귀 최대 깊이 — 악성 파일의 스택 오버플로 방지 */
+/** XML DOM 재귀 최대 깊이 — 악성 파일의 스택 오버플로 방지.
+ *  좌표계가 다른 hwp5 MAX_NEST_DEPTH(8, 표 중첩 단계)·filler/소스맵 16
+ *  (표 중첩 단계)과 달리 이건 "XML 요소" 깊이라 표 1단이 여러 depth를
+ *  소모한다 — 상수 통일 금지 (의미가 다름) */
 const MAX_XML_DEPTH = 200
 
 /** 셀 컨텍스트 확장 — 중첩표/이미지/다중문단 블록과 제목셀 여부를 IRCell로 전달 (v3.0) */
@@ -852,9 +855,34 @@ function buildTableWithCellMeta(state: TableState): IRTable {
   const table = buildTable(state.rows)
   if (state.caption) table.caption = state.caption
 
+  // 서수 폴백용 앵커 목록 (row-major, 병합 커버 칸 제외) — 소스 tc 수와 1:1일 때만 신뢰
+  const anchors: IRCell[] = []
+  {
+    const covered = new Set<string>()
+    for (let r = 0; r < table.rows; r++) {
+      for (let c = 0; c < table.cols; c++) {
+        if (covered.has(`${r},${c}`)) continue
+        const cell = table.cells[r]?.[c]
+        if (!cell) continue
+        for (let dr = 0; dr < cell.rowSpan; dr++) {
+          for (let dc = 0; dc < cell.colSpan; dc++) {
+            if (dr === 0 && dc === 0) continue
+            if (r + dr < table.rows && c + dc < table.cols) covered.add(`${r + dr},${c + dc}`)
+          }
+        }
+        anchors.push(cell)
+        c += cell.colSpan - 1
+      }
+    }
+  }
+  const srcCount = state.rows.reduce((s, r) => s + r.length, 0)
+  const ordinalReliable = anchors.length === srcCount
+
   const claimed = new Set<IRCell>()
+  let flatIdx = -1
   for (const row of state.rows) {
     for (const src of row as CellCtxEx[]) {
+      flatIdx++
       const needsBlocks = src.hasStructure && src.blocks && src.blocks.length > 0
       if (!needsBlocks && !src.isHeader) continue
 
@@ -875,6 +903,12 @@ function buildTableWithCellMeta(state: TableState): IRTable {
             }
           }
         }
+      }
+      // 3순위: 서수 폴백 — 동일 텍스트 중복/스팬 불일치로 못 찾은 셀의 blocks 유실 방지
+      // (소스 tc 순서 ↔ 앵커 순서가 1:1일 때만 — 그 외엔 오부착이 유실보다 나쁨)
+      if (!target && ordinalReliable) {
+        const cand = anchors[flatIdx]
+        if (cand && !claimed.has(cand)) target = cand
       }
       if (!target) continue
       claimed.add(target)

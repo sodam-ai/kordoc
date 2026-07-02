@@ -314,6 +314,11 @@ export interface PatchSkip {
   before?: string
   /** 편집 쪽 내용 요약 (최대 80자) */
   after?: string
+  /**
+   * 부분 적용 표시 — 변경이 적용은 됐지만(applied 계상) 편집 원형 그대로는
+   * 아님 (예: 셀 내 줄 추가를 마지막 문단에 병합). 완전 미적용 skip과 구분.
+   */
+  partial?: boolean
 }
 
 /** patchHwpx 옵션 */

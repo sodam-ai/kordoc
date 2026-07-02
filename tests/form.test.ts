@@ -2,7 +2,7 @@
 
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { extractFormFields } from "../src/form/recognize.js"
+import { extractFormFields, isLabelCell } from "../src/form/recognize.js"
 import type { IRBlock, IRTable } from "../src/types.js"
 
 function makeTable(rows: string[][]): IRTable {
@@ -101,5 +101,46 @@ describe("extractFormFields", () => {
     const blocks: IRBlock[] = [{ type: "table", table }]
     const result = extractFormFields(blocks)  // 크래시하지 않아야 함
     assert.ok(result.fields.some(f => f.label === "성명" && f.value === "홍길동"))
+  })
+})
+
+describe("isLabelCell — 라벨 인식 확장 (v3.7 P3)", () => {
+  it("숫자 낀 라벨을 인식한다", () => {
+    for (const label of ["연번1", "제1항목", "1차소속", "구조1대장"]) {
+      assert.ok(isLabelCell(label), `라벨 인정: ${label}`)
+    }
+  })
+
+  it("수량/단위 값은 라벨이 아니다", () => {
+    for (const value of ["6개월", "1억원", "5백만원", "2026년", "100원", "3명", "제3회"]) {
+      assert.ok(!isLabelCell(value), `값 거부: ${value}`)
+    }
+  })
+
+  it("9자 이상 한글 라벨(직위/기관명)을 인식한다", () => {
+    for (const label of ["제1소위원회위원장", "서울특별시은평병원", "정보통신담당관실"]) {
+      assert.ok(isLabelCell(label), `라벨 인정: ${label}`)
+    }
+  })
+
+  it("서술형 문구·법인명·3어절 이상 제목은 라벨이 아니다", () => {
+    for (const t of ["해당없음", "제출하시기바랍니다", "(주)원트리즈뮤직", "주식회사한글", "교통영향평가 심의 진행 절차"]) {
+      assert.ok(!isLabelCell(t), `거부: ${t}`)
+    }
+  })
+
+  it("자간 공백 라벨(업 체 명)은 계속 인식한다", () => {
+    for (const label of ["업 체 명", "유 효 기 한", "의 약 품 명", "수 신 자"]) {
+      assert.ok(isLabelCell(label), `라벨 인정: ${label}`)
+    }
+  })
+
+  it("콜론 없는 영문 라벨은 관행 단어만 인정한다", () => {
+    for (const label of ["Name", "Dept", "Date of Birth", "E-mail", "Tel"]) {
+      assert.ok(isLabelCell(label), `라벨 인정: ${label}`)
+    }
+    for (const t of ["Seoul", "Approved", "Hello World Test"]) {
+      assert.ok(!isLabelCell(t), `거부: ${t}`)
+    }
   })
 })

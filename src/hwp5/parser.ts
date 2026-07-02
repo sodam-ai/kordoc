@@ -34,7 +34,10 @@ interface CfbModule {
 const MAX_SECTIONS = 100
 /** 누적 압축 해제 최대 크기 (100MB) */
 const MAX_TOTAL_DECOMPRESS = 100 * 1024 * 1024
-/** 중첩표/글상자 재귀 깊이 상한 */
+/** 중첩표/글상자 재귀 깊이 상한 — 표 "중첩 단계" 기준.
+ *  실무 문서 중첩은 2~3단이라 8이면 충분하며, 바이너리 파싱 비용상
+ *  filler/소스맵(16)보다 보수적으로 둔다. hwpx MAX_XML_DEPTH(200)는
+ *  XML 요소 깊이라 좌표계가 다름 — 상수 통일 대상 아님 */
 const MAX_NEST_DEPTH = 8
 
 // ─── 컨트롤 ID (u32 LE 정규화) ───────────────────────

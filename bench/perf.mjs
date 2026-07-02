@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 파싱 성능 벤치 — 속도/처리량/강건성/라운드트립 수치화
-// 사용법: node bench/perf.mjs [corpus하위경로...]  (기본: review hwp5)
+// 사용법: node bench/perf.mjs [corpus하위경로...]  (기본: review hwp5 pdf)
 import { readdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { performance } from "node:perf_hooks"
@@ -8,7 +8,7 @@ import { parse, patchHwpx, patchHwp, extractFormFields } from "../dist/index.js"
 
 const root = new URL(".", import.meta.url).pathname
 const dirs = process.argv.slice(2).filter(a => !a.startsWith("--"))
-if (dirs.length === 0) dirs.push("review", "hwp5")
+if (dirs.length === 0) dirs.push("review", "hwp5", "pdf")
 
 const files = []
 for (const d of dirs) {
@@ -28,13 +28,14 @@ const fmt = n => n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2)
 
 // ── 그룹별 집계: 확장자 → { ms[], bytes[], blocks[], fail[] } ──
 const groups = new Map()
-const g = ext => { if (!groups.has(ext)) groups.set(ext, { ms: [], bytes: [], blocks: [], warm: [], fails: [], noopFail: [], noopOk: 0, fields: 0, fieldFiles: 0 }); return groups.get(ext) }
+const g = ext => { if (!groups.has(ext)) groups.set(ext, { ms: [], bytes: [], blocks: [], warm: [], fails: [], noopFail: [], noopOk: 0, fields: 0, fieldFiles: 0, slow: [] }); return groups.get(ext) }
 
 for (const path of files) {
   const buf = await readFile(path)
   const ext = path.match(/\.(\w+)$/)[1].toLowerCase()
   const G = g(ext)
   const name = path.split("/").pop()
+  const size = buf.length // pdf 파싱이 버퍼를 detach하면 이후 buf.length가 0
 
   // 콜드 1회 측정 (파일별 첫 파싱)
   let r
@@ -48,17 +49,20 @@ for (const path of files) {
   const cold = performance.now() - t0
   if (!r.success) { G.fails.push(`${name}: ${r.error?.slice(0, 60)}`); continue }
   G.ms.push(cold)
-  G.bytes.push(buf.length)
+  G.bytes.push(size)
   G.blocks.push(r.blocks?.length ?? 0)
+  G.slow.push({ name, ms: cold, pages: r.metadata?.pageCount })
 
-  // 웜 3회 중앙값 (JIT 반영 정속)
-  const warms = []
-  for (let k = 0; k < 3; k++) {
-    const w0 = performance.now()
-    await parse(buf)
-    warms.push(performance.now() - w0)
+  // 웜 3회 중앙값 (JIT 반영 정속) — pdf는 콜드가 수 초라 반복 생략 (연산 지배적, JIT 민감도 낮음)
+  if (ext !== "pdf") {
+    const warms = []
+    for (let k = 0; k < 3; k++) {
+      const w0 = performance.now()
+      await parse(buf)
+      warms.push(performance.now() - w0)
+    }
+    G.warm.push(pct(warms, 50))
   }
-  G.warm.push(pct(warms, 50))
 
   // 라운드트립 no-op 바이트 동일
   try {
@@ -89,9 +93,15 @@ for (const [ext, G] of groups) {
     const totalMB = G.bytes.reduce((a, b) => a + b, 0) / 1048576
     const totalSec = G.ms.reduce((a, b) => a + b, 0) / 1000
     console.log(`  콜드: median ${fmt(pct(G.ms, 50))}ms · p95 ${fmt(pct(G.ms, 95))}ms · max ${fmt(pct(G.ms, 100))}ms`)
-    console.log(`  웜:   median ${fmt(pct(G.warm, 50))}ms · p95 ${fmt(pct(G.warm, 95))}ms`)
+    if (G.warm.length) console.log(`  웜:   median ${fmt(pct(G.warm, 50))}ms · p95 ${fmt(pct(G.warm, 95))}ms`)
     console.log(`  처리량: ${fmt(totalMB / totalSec)} MB/s (총 ${fmt(totalMB)}MB / ${fmt(totalSec)}s)`)
     console.log(`  파일: median ${fmt(pct(G.bytes, 50) / 1024)}KB · max ${fmt(pct(G.bytes, 100) / 1024)}KB · 블록 median ${pct(G.blocks, 50)}`)
+    if (ext === "pdf") {
+      const slow = [...G.slow].sort((a, b) => b.ms - a.ms).slice(0, 5)
+      const perPage = G.slow.filter(s => s.pages > 0).map(s => s.ms / s.pages)
+      if (perPage.length) console.log(`  페이지당: median ${fmt(pct(perPage, 50))}ms/p · p95 ${fmt(pct(perPage, 95))}ms/p`)
+      for (const s of slow) console.log(`  🐢 ${fmt(s.ms)}ms${s.pages ? ` (${s.pages}p, ${fmt(s.ms / s.pages)}ms/p)` : ""} ${s.name}`)
+    }
     const noopTotal = G.noopOk + G.noopFail.length
     if (noopTotal) console.log(`  no-op 라운드트립: ${G.noopOk}/${noopTotal} 바이트동일`)
     if (G.fieldFiles) console.log(`  폼 인식: ${G.fieldFiles}건에서 ${G.fields}필드`)

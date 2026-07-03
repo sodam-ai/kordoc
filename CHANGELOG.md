@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.3] - 2026-07-03
+
+### Fixed
+
+- **2단 조판 본문(속기록류)을 표·컬럼으로 오인** — 문단 끝 짧은 줄 쌍이 표 머리글로
+  오인돼 2단 본문 전체가 2열 표로 흡수되고 좌우 단이 뒤섞이던 버그. 줄-투표 기반
+  중앙 빈 띠 판별(`findTwoColumnProseCutX`)로 표를 강등하고 단 분리 읽기 순서를
+  복원. 전폭 목차 줄이 XY-Cut을 막는 페이지는 컷 x로 좌/우/전폭 직접 분리.
+  (코퍼스 8,411페이지 전수에서 발화는 속기록 1건 — 타 문서 출력 바이트 동일)
+- **손상 PDF 파싱 시간 폭주(DoS) 가드** — 오염된 좌표(±Infinity·1e9)가 2단 판별
+  격자 스캔을 페이지당 수십억 회로 폭주시켜 파싱이 144.8초 걸리던 것을 2.3초로.
+  비유한 좌표 즉시 반환 + 스캔 후보 상한 400. (퍼즈 스윕으로 발굴, 정상 코퍼스
+  hash-sweep 바이트 동일)
+- **한셀(HCell) 저장 XLSX 파싱 실패** — 한셀은 spreadsheetml 요소를 `x:` 접두사로
+  선언(`<x:sheet>`)하는데 요소 조회가 정규화 이름만 매칭해 "시트가 없습니다"로
+  실패하던 것 수정 (네임스페이스 폴백 추가).
+- **HML(HWPML) 문단 앵커 표 통째 소실** — 표가 `<P>` 안에 앵커된 문서에서 표
+  전체가 빠지고, 셀 안 중첩표는 "[중첩 테이블]" 마커로 내용이 사라지던 버그.
+  해수부 공고 실코퍼스 9건 recall 0.231 → 0.996.
+
+### Changed
+
+- 검증 인프라 4종 신설(내부) — 생성 라운드트립(md→hwpx→재파싱 커버리지), 퍼즈
+  스윕(절단·비트플립 183파일×4변형 732런 전부 통과), HWP↔HWPX 동일문서 쌍
+  게이트(유사도 0.9946), 포맷 트랙(DOCX/XLSX/HML 자기참조 recall).
+  `npm run bench:gate`로 일괄 실행.
+- HWPX 표 채점 cellExact·contentNED **1.0 도달** — 셀 자동부호(한컴 화면 렌더
+  동일) 채점 비대칭 해소 후 게이트 상향 잠금.
+
 ## [3.8.2] - 2026-07-03
 
 ### Fixed

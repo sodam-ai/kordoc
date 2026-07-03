@@ -1,67 +1,64 @@
 # Active Context — kordoc 본체
 
-**마지막 업데이트**: 2026-07-03 (연속 세션 6: v3.8.4 릴리스 + roundtrip 왕복 수술 3종 + pdf표GT 순서구제·게이트 편입)
-**상태**: 테스트 641/641. `npm run bench:gate` **5체인**(score·roundtrip·pdf-table-gt·formats·fuzz) 전부 PASS. tsc 13(동수)
+**마지막 업데이트**: 2026-07-03 (연속 세션 7: PR#39 인수→v3.9.0 릴리스 + 법령 줄바꿈 검증 + 레이아웃 렌더 PoC 성립)
+**상태**: 테스트 673/673. `npm run bench:gate` **5체인** 전부 PASS (신규 게이트 3종 포함). tsc 13(동수)
 
-## 이번 세션 완료 (2026-07-03 연속 6차)
+## 이번 세션 완료 (2026-07-03 연속 7차)
 
-- **⓪ v3.8.4 릴리스** — docx 병합표·텍스트박스(전 세션 적립 1255e49) + 이번 수술 묶음.
-  npm publish + git tag + GitHub 릴리스. CHANGELOG/README 현행화 동반
-- **① roundtrip 헤딩 왕복 소실 수술** — 파서 헤딩 감지 경로 = OUTLINE 권위 + 폰트비율
-  휴리스틱인데, ⑴ generator가 outline 정보를 안 심었고 ⑵ 폰트 경로는 `case "r"`이
-  실제 한컴 `<hp:run>`을 못 잡는 죽은 코드(실파일도 동일)라 이중 불발. **generator에
-  OUTLINE paraPr(1~4, level 0~3) + 빈 서식 numbering(id 1, paraHead 7레벨 빈 텍스트)
-  + secPr outlineShapeIDRef="1"** 심어 해결 — 한컴 화면 번호 무변화·문서 찾아가기
-  개요 표시. h5/h6→h4 축약(paraPr 매핑). 파서 쪽은 **빈 서식 paraHead에 "^N." 접두
-  발명하던 버그**만 수정(실코퍼스 영향 0 실증). corpus 75건 md엔 헤딩 0개(공문서
-  관행)라 fwd/bwd 무영향 — fixture 헤딩 무결성 게이트(h1~h6 레벨 시퀀스) 신설로 잠금
-- **② 마스킹 별표 런 + 리스트 마커 수술** (fwd 0.947→**0.9996**·bwd 0.9468→**0.9991**의
-  주역) — worst 문서 해부로 발견: ⑴ `******` 마스킹이 md HR로 소비돼 `────` 40자로
-  변신(그램 597/문서) ⑵ 순서 리스트 "2. 3."이 "1. 2."로 재부여. **파서 escapeGfm에
-  `*` 추가**(본문+셀, markdown-units 미러 동기화), **MdBlock.marker 원본 보존**,
-  **generator 센티널 언이스케이프**(강조 정규식이 `\*`의 별표를 델리미터로 소비해
-  백슬래시만 남던 함정 — 인덱스 내장 `\x00N\x00` 마스킹→복원). 전 코퍼스 md 전/후
-  전수 대조: hwpx 29/88·hml 9/9·pdf 27/42 변경 전부 `*` 이스케이프 성격만
-- **③ pdf-table-gt 순서구제** (매칭 81.94→**84.72%**·exact 51.39→**54.17%**·cellF1
-  0.6046→**0.6324**) — pair06 해부: 2단 페이지에서 pdf가 표를 y순 방출해 문서 흐름과
-  역전 → 순서보존 DP가 그리드 동일 표를 버림. matchTables에 잔여 전역 그리디
-  (sim≥0.55) 구제 추가. 다른 쌍 변화 0(문턱 보수성)·roundtrip 무영향. **무후퇴 플로어
-  게이트 + bench:gate 체인 편입** (3회 연속 동일)
-- **④ 파서 tolerance 실험 → 철회** (기록 자산): 응시원서 표 12열→9열 붕괴 원인 =
-  1.6~2.7pt 헤어라인 경계를 coordMergeTol(플로어 8, 4×radius)이 병합. 1.25×/1.5로
-  낮추면 pair06 22x12 GT 일치하지만 **pair08은 GT가 9열 통합이라 22x13 유령 열로
-  F1 0.373→0 붕괴** — GT 표현이 문서마다 갈려 pdf 쪽 증거로 구분 불가. 전면 철회,
-  pdf-table-gt.mjs 헤더에 실험 기록. **재론 금지**
+- **⓪ PR #39 인수 → v3.9.0 릴리스** — 기여자(leehuiso) 수식 생성 PR을 main 리베이스
+  (충돌 없이 자동 병합) 후 리뷰 확정 8건을 4수술로 직접 수정, maintainerCanModify로
+  포크 브랜치 갱신 → draft 해제 → **정식 머지(MERGED, 기여자 커밋 e74b284 보존)**.
+  npm publish + tag + gh release + CHANGELOG/README/CLAUDE.md 모듈표(equation 2행 추가)
+- **① 4수술 상세** — ⑴ $$스캐너 재작성: 미종결 통삼킴→일반 문단 폴백, 닫는 $$ 뒤
+  텍스트 보존, 빈줄/코드펜스 경계, 이스케이프 \$$ 홀수 백슬래시 판정 ⑵ 깊이(64)/
+  길이(10K) 가드: 중괄호 폭탄·\frac 체인 스택 오버플로 차단 ⑶ 어휘 왕복 공용화:
+  ast→AST·leftarrow→larrow, 읽기 CONVERT_MAP에 +-·cdot 추가, normalizeEqEdit
+  접합 제거(공백만), pmatrix/bmatrix 네이티브, LEFT/RIGHT 이스케이프 구분자(\{),
+  예약어=토큰맵 키 도출+LaTeX 원문 선따옴표(변환 산출물 재따옴표 방지 — \pi 함정),
+  \text→"…" 리터럴, 읽기 "…"→\text{} 언쿼트 (고정점) ⑷ 공문 run 예외 equation.
+  **전 토큰 왕복 고정점 테스트**(COMMAND_MAP/ACCENT 전 항목) 신설
+- **② 게이트 편입** — roundtrip: equation fixture+equationErrors, law fixture+
+  lineErrors / fuzz: mdgen 60런(markdownToHwpx crash/hang/slow/genInvalid) —
+  $$ 게이트 무감 구멍 봉합. 코퍼스 hash-sweep 동일(hwpx 75건에 수식 0건 실증)
+- **③ 법령 md→hwpx 줄바꿈 검증 (유저 요청)** — 민원처리법 전문 md 왕복 실측:
+  228문단, 빈 문단 0, 마커 단독 0, 223줄→223줄 쪼개짐/조각 0, XML lineBreak/
+  개행/강제 페이지브레이크 0. **현행 버전 문제 없음** → law fixture lineErrors
+  게이트로 클래스 고정
+- **④ 레이아웃 보존 렌더 PoC 성립** — `.claude/plans/render-poc/` (스크립트+findings).
+  결재문서(로고 PNG·표·하단 결재란)와 사진대지(BMP) 1페이지 SVG 재현 성공.
+  핵심 산식: 최상위 lineseg=본문영역 로컬 / 셀=셀 로컬 / PARA 개체 밀어내기 역산
+  `호스트vp−(omTop+h+omBottom)` 실측 정확 일치 / PAGE+BOTTOM=트레일러 하단 고정 /
+  textLength=horzsize로 장평·배분정렬 재현. 잔여: 인라인(tac=1) 스케일·중첩 컨테이너
+  pic·탭 청크·charPr — findings.md 참조
 
-## 지표 대시보드 (2026-07-03 연속 6차 종료)
+## 지표 대시보드 (2026-07-03 연속 7차 종료 — v3.9.0)
 
 | 트랙 | 지표 | 값 | 게이트 | 비고 |
 |---|---|---|---|---|
 | hwpx(85) | recallMicro / phantom | **1.0** / 0.000054 | 0.999 / 0.005 | |
 | hwpx | 표 exact / cellF1 | **611/611** / 1.0 | 0.99 / 0.999 | |
-| hwpx | cellExact / contentNED / order | **1.0/1.0/1.0** | | |
-| pdf(48) | coverage(micro) | **0.99609** | 0.985 | 미달 1건 = eval-perf-2024 0.9785(벡터 아웃라인) |
+| pdf(48) | coverage(micro) | **0.99609** | 0.985 | 미달 1건 = eval-perf-2024 0.9785 |
 | hwp쌍(10) | 유사도 / 커버 | **0.9946 / 0.9929** | 0.99 / 0.99 | |
-| docx(7) | recall | **0.998903** | 0.998 | |
-| xlsx(11) | strRecall / numRecall | **1.0** / 0.9844 | 0.999(str) | num은 표기차 정상 |
-| hml(9) | recall | 0.9960 | 0.995 | bizinfo 0.973(글상자 추정) |
-| roundtrip | fwd / bwd / tblExact / 헤딩 | **0.9996 / 0.9991** / 0.7278 / 0에러 ⬆ | 0.999/0.998/0.72/0 ⬆ | 수술 3종 완료, tblExact은 헤딩과 무관 실증 |
-| pdf표GT(6쌍) | 매칭/exact/cellF1/NED | **0.8472/0.5417/0.6324**/0.5008 ⬆ | 0.845/0.54/0.63/0.5 ✨편입 | 순서구제 도입 |
-| fuzz(732런) | crash/hang/noCode/slow | **0/0/0/0** | 전부 0 | |
-| 테스트/tsc | **641/641** / 13(동수) | — | — | +generator 회귀 4건 |
+| formats | docx/xlsxStr/hml | 0.998903/**1.0**/0.995974 | 0.998/0.999/0.995 | |
+| roundtrip | fwd / bwd / 헤딩 / 수식 / 줄 | **0.999632 / 0.99915** / 0 / 0 / 0에러 | 0.999/0.998/0/0/0 ✨수식·줄 신설 | |
+| pdf표GT(6쌍) | 매칭/exact/cellF1 | **0.8472/0.5417/0.6324** | 0.845/0.54/0.63 | |
+| fuzz(792런) | crash/hang/noCode/slow/genInvalid | **0/0/0/0/0** | 전부 0 | ✨mdgen 60런 편입 |
+| 테스트/tsc | **673/673** / 13(동수) | — | — | +수식 회귀/왕복 20건 |
 
 ## 릴리스
 
-- **v3.8.4 발행됨** (2026-07-03): docx 병합표+텍스트박스 / 마스킹 별표 보호 /
-  왕복 충실도 3종 / 개요 번호 발명 수정. npm+tag+gh release
-- 커밋: 2a439b7(수술) → a0bc6f4(bench) → e39f3a9(release)
+- **v3.9.0 발행됨** (2026-07-03): Markdown 수식 → HWPX native 수식 (#38, #39
+  leehuiso 기여 + 리뷰 8건 수술) + 게이트 3종. npm+tag+gh release
+- 커밋: e74b284(기여자) → a218af4(수술) → 7dcb7a9(bench) → 1dd819d(머지) → a125035(release)
 
-## 다음 세션 (플랜: .claude/plans/next-session-pdf-gt-leftovers.md — 구 roundtrip 대체)
+## 다음 세션 (플랜: .claude/plans/next-session-pdf-gt-leftovers.md 갱신본)
 
-- **① pdf-table-gt 잔여**: 분할병합 보정 불발(전 쌍 splitMerged=0 — 머리글 반복
-  rowsSum 불일치 의심, 관용 rowsSum-1 시도) / pair05 F1 0.458 해부
-- ② 소액: hml bizinfo 글상자 / eval-perf-2024 OCR / A-5 폼 정오 / hwp3 합성 픽스처
-- roundtrip 잔여는 수용 상태 (셀 img·hr 비대칭·인라인 강조 — IR 한계)
+- **① 렌더 모듈화 판단**: PoC 잔여 4건(인라인 스케일·중첩 pic·탭 청크·charPr) 해소
+  후 src/render/ + CLI `kordoc render` 노출 — render-poc/findings.md 먼저 읽기
+- **② pdf-table-gt 잔여**: 분할병합 보정 불발(전 쌍 splitMerged=0, rowsSum-1 관용
+  시도) / pair05 F1 0.458 해부
+- ③ 소액: hml bizinfo 글상자 / eval-perf-2024 OCR / A-5 폼 정오 / hwp3 합성 픽스처
+- Windows+한컴에서 v3.9.0 수식 hwpx 실물 열기 확인 (사용자) — PR 체크박스 미완 항목
 
 ## 재론 금지 (기존 유지 + 신규)
 
@@ -71,20 +68,20 @@
 - 셀 장식 관용은 heading paraPr 마킹 줄에만 / changwon 성능 재론 금지
 - formats 추출기 = 파서 경계 미러 / xlsx 시트 순서 = workbook 순서 / UNIT_CAP 5만
 - pdf-table-gt 모수 = 최상위 2×2+ / docx vMerge val 없음=계속 셀
-- **pdf 헤어라인 tolerance 완화 금지** (④ 실험 기록 참조 — GT 양방향 회귀)
-- **파서 md `*` 이스케이프 유지** (escapeGfm — 벤치는 unescapeMd 대칭) / **generator
-  센티널 언이스케이프 유지** / **생성 헤딩 = OUTLINE + 빈 서식 numbering** (서식 채우면
-  화면에 번호 붙음) / 파서 빈 서식 paraHead 접두 발명 금지
+- **pdf 헤어라인 tolerance 완화 금지** (6차 실험 기록 — GT 양방향 회귀)
+- **파서 md `*` 이스케이프 유지** / generator 센티널 언이스케이프 유지 / 생성 헤딩 =
+  OUTLINE + 빈 서식 numbering / 파서 빈 서식 paraHead 접두 발명 금지
+- **수식 왕복 정합 유지**: 쓰기 COMMAND_MAP 값은 반드시 읽기 CONVERT_MAP이 같은
+  LaTeX로 되돌리는 토큰 (전 토큰 고정점 테스트가 잠금 — 새 토큰 추가 시 양쪽 동시).
+  예약어 따옴표는 **변환 전 LaTeX 원문에만** (산출물 재따옴표 = \pi→"pi" 함정)
 - ⚠ hash-sweep EXTS에 .hml 미포함 — hml 파서 검증은 md 해시 별도 대조
 
 ## 코퍼스/도구 메모
 
 - 실파일 코퍼스(gitignore): review/ 45 · hwp5/ 13+30 · pdf/ 42 · pairs/ 26 · formats/ 27
-- pairs 재수집: bench/pairs-manifest.json (mods.go.kr Referer 필수)
-- PDF 수집법: 검색엔진 `filetype:pdf site:go.kr` 직링크 / score pdf 트랙 pdftotext(poppler) 필수
-- 게이트 일괄: `npm run bench:gate`(5체인) / perf: `node bench/perf.mjs` / PDF표: `node bench/pdf-table-gt.mjs`
+- 게이트 일괄: `npm run bench:gate`(5체인) / PDF표: `node bench/pdf-table-gt.mjs`
 - npm publish: `~/.npmrc` bypass 2FA granular 토큰 유효. 릴리스 관례 = release 커밋
   (CHANGELOG+README `## vX.Y.Z 변경사항`+package.json) + 경량 태그 + npm publish + gh release
-- 디버깅 자산(scratchpad 휘발): rt-diag.mjs(왕복 그램 소실 해부)·pair-diag.mjs(pdf표GT 쌍
-  해부)·grid-diag.mjs(그리드 행별 앵커 지도)·md-compare.mjs(⚠ 이중 dist 임포트 시 pdfjs
-  전역 충돌로 PDF 파싱 실패 — PDF는 프로세스 분리 필수)
+- PR 인수 관례: maintainerCanModify면 포크 브랜치에 force-push → draft면 `gh pr ready` → merge
+- 렌더 PoC 재현: `python3 .claude/plans/render-poc/poc-render.py <hwpx> out.svg` →
+  headless Chrome 스크린샷. 코퍼스 hwpx 75건에 수식 0건 (수식 검증은 fixture로만 가능)

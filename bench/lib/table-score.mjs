@@ -86,6 +86,13 @@ function cellTextBag(grid) {
     const k = normKey(a.text)
     if (k) bag.set(k, (bag.get(k) ?? 0) + 1)
   }
+  // 매칭 전용 bag 보강 — 다중 셀 부모의 중첩표 텍스트 (pdf-table-gt가 ref 쪽에 적재).
+  // pdf는 중첩표를 부모 그리드로 평탄화하므로, bag에 합쳐야 동의서류 박스가 같은
+  // 표로 매칭된다. 셀 좌표 채점(exact/F1/NED)에는 관여하지 않는다.
+  for (const t of grid.bagExtra ?? []) {
+    const k = normKey(t)
+    if (k) bag.set(k, (bag.get(k) ?? 0) + 1)
+  }
   return bag
 }
 

@@ -25,7 +25,7 @@
  */
 
 export type { LineSegment, TableGrid, ExtractedCell, TextItem } from "./line-types.js"
-export { extractLines, preprocessLines, filterPageBorderLines } from "./line-extract.js"
+export { extractLines, preprocessLines, filterPageBorderLines, closeOpenTableEdges } from "./line-extract.js"
 export { extractImageRegions, type ImageRegion } from "./image-regions.js"
 export { buildTableGrids } from "./table-grid.js"
 export { extractCells } from "./cell-extract.js"

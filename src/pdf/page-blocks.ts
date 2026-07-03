@@ -8,7 +8,7 @@
 
 import type { IRBlock, IRTable, BoundingBox } from "../types.js"
 import { safeMin, safeMax } from "../utils.js"
-import { extractLines, preprocessLines, filterPageBorderLines, buildTableGrids, extractCells, mapTextToCells, cellTextToString, normalizeUndersegmentedTable, type TextItem, type TableGrid, type LineSegment } from "./line-detector.js"
+import { extractLines, preprocessLines, filterPageBorderLines, closeOpenTableEdges, buildTableGrids, extractCells, mapTextToCells, cellTextToString, normalizeUndersegmentedTable, type TextItem, type TableGrid, type LineSegment } from "./line-detector.js"
 import { detectClusterTables, findTwoColumnProseCutX, type ClusterItem } from "./cluster-detector.js"
 import { type NormItem, collapseEvenSpacing, computeBBox, dominantStyle, groupByY, mergeSuperscriptLines, mergeLineSimple } from "./text-line.js"
 import { xyCutOrder } from "./xy-cut.js"
@@ -32,8 +32,12 @@ export function extractPageBlocksWithLines(
   ;({ horizontals, verticals } = filterPageBorderLines(horizontals, verticals, pageWidth, pageHeight))
 
   // 1.5단계: 선 전처리 (ODL LinesPreprocessingConsumer 포팅)
-  // 굵은 선 필터 + 근접 평행 선 병합
+  // 굵은 선 필터 + 음영 스택 제거 + 근접 평행 선 병합
   ;({ horizontals, verticals } = preprocessLines(horizontals, verticals))
+
+  // 1.6단계: 개방 변 표 테두리 합성 — 좌/우 바깥 테두리 생략 스타일(행정문서 관행)의
+  // 가장자리 열 소실 방지. 내부 수직선이 실존하는 정렬 괘선 묶음에만 발동.
+  verticals = closeOpenTableEdges(horizontals, verticals)
 
   // 1.7단계: 취소선 감지 — 텍스트 중심을 가로지르는 얇은 수평선 (ODL StrikethroughProcessor)
   markStrikethroughItems(items, horizontals)

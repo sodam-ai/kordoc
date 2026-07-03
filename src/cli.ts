@@ -398,6 +398,33 @@ program
   })
 
 program
+  .command("render <file>")
+  .description("레이아웃 보존 렌더 — 한컴 저장 HWPX의 조판 캐시를 SVG로 (1페이지) — kordoc render 문서.hwpx -o 문서.svg")
+  .option("-o, --output <path>", "출력 SVG 경로 (기본: <입력>.svg)")
+  .option("--silent", "진행 메시지 숨기기")
+  .action(async (file: string, opts) => {
+    try {
+      const rootOpts = program.opts()
+      const output: string | undefined = opts.output ?? rootOpts.output
+      const silent: boolean = opts.silent ?? rootOpts.silent
+      const { renderHwpxToSvg } = await import("./render/index.js")
+      const absPath = resolve(file)
+      const buffer = readFileSync(absPath)
+      const result = await renderHwpxToSvg(toArrayBuffer(buffer))
+      const outPath = resolve(output ?? file.replace(/\.hwpx$/i, "") + ".svg")
+      mkdirSync(dirname(outPath), { recursive: true })
+      writeFileSync(outPath, result.svg, "utf-8")
+      if (!silent) {
+        process.stderr.write(`[kordoc] 렌더 (${result.width}x${result.height}pt, 텍스트 ${result.stats.texts}·이미지 ${result.stats.images}·표 ${result.stats.tables}) → ${outPath}\n`)
+        for (const w of result.warnings) process.stderr.write(`[kordoc] ⚠️ ${w}\n`)
+      }
+    } catch (err) {
+      process.stderr.write(`[kordoc] 오류: ${sanitizeError(err)}\n`)
+      process.exit(1)
+    }
+  })
+
+program
   .command("mcp")
   .description("MCP 서버 실행 (Claude / Cursor / Windsurf 연동)")
   .action(async () => {

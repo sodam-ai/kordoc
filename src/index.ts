@@ -343,6 +343,8 @@ export type {
 } from "./roundtrip/source-map.js"
 export { renderHtml, markdownToPdf, blocksToPdf } from "./print/renderer.js"
 export type { PrintPreset, PrintOptions, PageMargin } from "./print/renderer.js"
+export { renderHwpxToSvg } from "./render/index.js"
+export type { RenderSvgOptions, RenderSvgResult } from "./render/index.js"
 
 // ─── Re-exports ──────────────────────────────────────
 

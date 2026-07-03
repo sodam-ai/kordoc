@@ -54,7 +54,7 @@
 | perf | hwpx ~7.8ms · pdf 8.2ms/p | — | — | changwon 22.4ms/p = pdfjs 플로어(종결) |
 | 테스트/tsc | **635/635** / 13(동수) | — | — | +DoS 회귀 +formats 회귀 2건 |
 
-## 다음 세션 후보 (플랜: .claude/plans/next-session-full-score.md 진행 체크 참조)
+## 다음 세션 후보 (플랜: .claude/plans/next-session-formats-surgery.md — 구 full-score 대체)
 
 - **formats 미달 3건 수술** (파서 실손실 확인·재료 준비됨): ⑴docx niied 2번째 표(귀국신고서)
   통째 드롭(recall 0.675, md 1961자뿐) ⑵docx kats mc:AlternateContent Choice/Fallback 이중

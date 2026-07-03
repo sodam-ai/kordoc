@@ -181,15 +181,20 @@ export function findTwoColumnProseCutX(items: ClusterItem[]): number | null {
     if (i.x < minX) minX = i.x
     if (i.x + i.w > maxX) maxX = i.x + i.w
   }
+  // 비유한/과대 span 가드 — 손상 PDF의 오염된 좌표(±Infinity, 1e9 등)가 스캔 루프를
+  // 폭주시키는 것 차단 (fuzz: bflip에서 페이지당 수십억 회 반복 실측)
+  if (!Number.isFinite(maxX - minX)) return null
   if (maxX - minX < 100) return null
 
   // 중앙부(30~70%)를 2pt 격자로 스캔: 각 x를 덮는 줄 수가 최소인 지점 = 단 사이 빈 띠.
   // 프로젝션 최대 갭 방식과 달리 전폭 제목 몇 줄이 있어도 빈 띠를 찾는다.
+  // 후보 수 상한 400 — 정상 판형(span<2000pt)은 2pt 그대로, 오염 좌표만 성긴 샘플링
   const lo = minX + (maxX - minX) * 0.3
   const hi = minX + (maxX - minX) * 0.7
+  const step = Math.max(2, (hi - lo) / 400)
   let cutX = 0
   let bestCover = Infinity
-  for (let x = lo; x <= hi; x += 2) {
+  for (let x = lo; x <= hi; x += step) {
     let cover = 0
     for (const line of lines) {
       if (line.items.some(i => i.x < x && i.x + i.w > x)) cover++

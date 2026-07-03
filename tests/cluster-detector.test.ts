@@ -105,4 +105,16 @@ describe("findTwoColumnProseCutX (2단 조판 본문 판별)", () => {
     const results = detectClusterTables(twoColumnProsePage(), 1)
     assert.equal(results.length, 0, "2단 본문이 표로 흡수되면 안 됨")
   })
+
+  it("오염 좌표(Infinity·과대 span)에서 폭주 없이 즉시 종료", () => {
+    // 손상 PDF의 오염 CTM이 만드는 극단 좌표 — 스캔 루프 폭주 회귀 방지 (fuzz: bflip)
+    const inf = twoColumnProsePage()
+    inf.push({ text: "오염", x: Infinity, y: 700, w: 10, h: 12, fontSize: 12, fontName: "T" })
+    const t0 = performance.now()
+    findTwoColumnProseCutX(inf)
+    const huge = twoColumnProsePage()
+    huge.push({ text: "오염", x: 1e9, y: 700, w: 10, h: 12, fontSize: 12, fontName: "T" })
+    findTwoColumnProseCutX(huge)
+    assert.ok(performance.now() - t0 < 1000, "오염 좌표에서 1초 내 반환해야 함")
+  })
 })

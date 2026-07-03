@@ -121,7 +121,11 @@ export function matchTables(refTables, irGrids) {
   for (let i = 0; i < n; i++) {
     sim.push(new Float64Array(m))
     for (let j = 0; j < m; j++) {
-      sim[i][j] = 0.75 * bagSim(refBags[i], irBags[j]) + 0.25 * dimSim(refTables[i], irGrids[j])
+      const bs = bagSim(refBags[i], irBags[j])
+      // 양쪽 다 텍스트가 있는데 교집합 0 = 내용이 모순되는 표 — dims-only 매칭 차단
+      // (dimSim 0.25 누수가 진짜 짝을 선점해 순서구제까지 봉쇄하는 것 방지, 10차)
+      if (bs === 0 && refBags[i].size > 0 && irBags[j].size > 0) { sim[i][j] = 0; continue }
+      sim[i][j] = 0.75 * bs + 0.25 * dimSim(refTables[i], irGrids[j])
     }
   }
   const MIN_SIM = 0.2

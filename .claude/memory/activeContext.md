@@ -1,61 +1,85 @@
 # Active Context — kordoc 본체
 
-**마지막 업데이트**: 2026-07-03 (연속 세션 8: 렌더 모듈화 → v3.10.0/v3.10.1 릴리스 + 스레드 카드)
-**상태**: 테스트 683/683 (렌더 10 신규). `npm run bench:gate` 5체인 전부 PASS. tsc 14(동수 — 기록 13은 구식)
+**마지막 업데이트**: 2026-07-03 (연속 세션 9: pdf표GT 해부 → v3.11.0 개방형 표 복원 릴리스)
+**상태**: 테스트 683/683. `npm run bench:gate` 5체인 전부 PASS. tsc 13(기존 — 신규 0)
 
-## 이번 세션 완료 (2026-07-03 연속 8차)
+## 이번 세션 완료 (2026-07-03 연속 9차)
 
-- **⓪ 한컴 실물 확인**: 수식검증 hwpx 2개 사용자 확인 — 전부 정상. 픽스 불필요
-- **① 렌더 모듈화 → v3.10.0** — PoC(.claude/plans/render-poc)를 src/render/ 3모듈로:
-  `layout.ts`(toInt32·열 경계 전파 솔버·행 높이 max+콘텐츠 성장),
-  `head-styles.ts`(charPr/paraPr 정렬/borderFill), `svg-render.ts`(본체).
-  CLI `kordoc render <hwpx> -o out.svg` + `renderHwpxToSvg` API 노출.
-  **잔여 4건 전원 해소 — 오진 2건 정정**: 컨테이너 누락의 진범=uint32 음수
-  vertOffset(4294967103=−193)+셀 안 COLUMN 기준계(페이지→셀 영역), 탭 청크
-  겹침의 진범=41열 그리드 span-1 부재(경계 전파 솔버로 해결). 인라인=lineseg
-  위치+baseline, run별 charPr(크기·굵기·색·밑줄·장평·자간, 자연폭=text-metrics
-  hmtx 재사용), horzsize=줄 영역 폭(마지막 줄만 정렬 분기, 중간 줄 textLength
-  고정), 연속 공백(2+) 조각 절단(공무원 스페이스 정렬 대응), borderFill
-  배경/테두리(직인표 팬텀 제거), 셀 수직정렬, imgClip 크롭, 행 성장(사진 셀
-  25251 실측 일치). 검증=결재문서 2종+사진대지 스크린샷, 코퍼스 hwpx 85건
-  크래시/NaN 0, tests/render.test.ts 10건
-- **② v3.10.1** — SVG width/height **pt 단위 명시** (단위 없는 px는 A4 실물보다
-  25% 축소 — 사용자가 "쏠림"으로 발견). npm+태그+gh release 2건 모두 완료
-- **③ 문서 현행화** — README(기능 불릿+v3.10 섹션+사용법+CLI+API표+타입),
-  CHANGELOG, CLAUDE.md 모듈표(render 3행), findings.md(모듈화 결과+오진 정정 기록)
-- **④ 스레드 카드** — threads-post 스킬로 기안문 패러디 카드(1080×1350,
-  "딴짓하는 류주임" 발신·주말은없음 도장·결재란 지표 4칸) 제작. 사용자 피드백
-  반영(단어 줄바꿈 keep-all·렌더 설명 쉬운말·v3.8.0~3.8.3 항목 4건 추가).
-  캡션 컨펌 완료. **발행은 사용자가 직접** (자동 게시 스크립트 없음 — 패키지 전달됨)
+- **① 분할병합 rowsSum 가설 실측 → 기각**: 6쌍 전수 해부 결과 코퍼스에 페이지
+  분할 표가 아예 없음 (파서 `mergeCrossPageTables`가 상류 흡수). pair10 ref#15의
+  +1행(18x11↔19x11)도 분할이 아니라 **중첩표 평탄화**였음. 채점기의 분할병합
+  보정은 이 코퍼스에서 발동 대상 자체가 없음 — 미매칭 11건의 지배 패턴은
+  ⓐ동의서류 평탄화(hwpx 외곽표+중첩표 vs pdf 단일 그리드) 6건 ⓑpdf 표 오검출
+  ⓒ흐름띠(⇒)·빈 표 미감지
+- **② pair05 해부 → 파서 근본 픽스 (v3.11.0)**: 진범 2개 실측 —
+  ⓐ**좌우 개방형 표**(행정문서 관행: 수평 괘선 전폭, 수직선은 내부만. PDF에
+  바깥 수직 stroke가 아예 없음) → 그리드가 가운데 열만 잡고 지역·비고 열 유출
+  ⓑ**글상자 그라디언트 음영이 수평선 ~100개**(0.5pt 간격, w=2.5)로 출력 →
+  mergeParallelLines(3pt 관용)가 연쇄 병합하며 실제 박스 테두리를 삼킴 →
+  유출 텍스트+본문+제목을 클러스터 감지기가 13x2 쓰레기 표로 흡수.
+  픽스 = `dropShadingStacks`(≥6줄·<2pt run 제거, 병합 전) +
+  `closeOpenTableEdges`(끝점 정렬 괘선 ≥3줄 + 내부 수직선 교차≥2 실존 시 가상
+  수직 테두리 합성, line-extract.ts, page-blocks 1.6단계)
+- **③ 채점기 bagExtra**: 다중 셀 부모의 중첩표 텍스트를 **매칭 bag에만** 합산
+  (pdf-table-gt.mjs topGrids + table-score.mjs cellTextBag) → 동의서류 박스 4건
+  매칭 회복. 셀 좌표 채점 불관여. score.mjs(hwpx 트랙)는 bagExtra 없어 무영향
+- **④ 릴리스 v3.11.0**: feat 95291ce → release b0eefe3 + 태그 + npm publish +
+  gh release. README/CHANGELOG/CLAUDE.md 현행화
 
-## 지표 대시보드 (2026-07-03 연속 8차 종료 — v3.10.1)
+## 지표 대시보드 (2026-07-03 연속 9차 종료 — v3.11.0)
 
 | 트랙 | 지표 | 값 | 게이트 | 비고 |
 |---|---|---|---|---|
 | hwpx(85) | recallMicro / phantom | **1.0** / 0.000054 | 0.999 / 0.005 | |
 | hwpx | 표 exact / cellF1 | **611/611** / 1.0 | 0.99 / 0.999 | |
-| pdf(48) | coverage(micro) | **0.99609** | 0.985 | 미달 1건 = eval-perf-2024 0.9785 |
+| pdf(48) | coverage(micro) | **0.99608** | 0.985 | 종전 0.99609, Δ−1e-5 = 표GT 트레이드 (파일별 최대하락 ice-geomjeong −0.0034 라벨탭 병리, 최대상승 pair05 +0.0018) |
 | hwp쌍(10) | 유사도 / 커버 | **0.9946 / 0.9929** | 0.99 / 0.99 | |
 | formats | docx/xlsxStr/hml | 0.998903/**1.0**/0.995974 | 0.998/0.999/0.995 | |
 | roundtrip | fwd / bwd / 헤딩 / 수식 / 줄 | **0.999632 / 0.99915** / 0 / 0 / 0 | 0.999/0.998/0/0/0 | |
-| pdf표GT(6쌍) | 매칭/exact/cellF1 | **0.8472/0.5417/0.6324** | 0.845/0.54/0.63 | 분할병합 0 = 차기 메인 |
+| pdf표GT(6쌍) | 매칭/exact/cellF1 | **0.9028/0.5833/0.6518** | **0.90/0.58/0.65** ↑재잠금 | cellExact 0.6732(0.67)·NED 0.4939(**0.49**↓ — 정직한 매칭 비용, 헤더 문서화) |
 | fuzz(792런) | crash/hang/noCode/slow/genInvalid | **0/0/0/0/0** | 전부 0 | |
-| 렌더 | 코퍼스 hwpx 스모크 | **85/85** 크래시·NaN 0 | 테스트 10/10 | ✨신설 |
-| 테스트/tsc | **683/683** / 14(동수) | — | — | |
+| 렌더 | 코퍼스 hwpx 스모크 | **85/85** 크래시·NaN 0 | 테스트 10/10 | |
+| 테스트/tsc | **683/683** / 13(기존 — 신규 0) | — | — | |
 
-## 릴리스
+### pdf표GT 쌍별 (v0 → v3.11.0)
 
-- **v3.10.0/v3.10.1 발행됨** (2026-07-03): 레이아웃 보존 렌더 + pt 단위 픽스.
-  커밋: 308d0c2(feat) → 625d92d(release 3.10.0) → pt픽스 release 3.10.1
-- v3.9.0 (2026-07-03): 수식 생성 (#38, #39 인수)
+| pair | 매칭 | exact | F1 | NED |
+|---|---|---|---|---|
+| 05 해외통계 | 8→**9/9** | 2→**5** | 0.458→**0.613** | 0.347→0.417 |
+| 06 인구주택 | 11→12 | 10 | 0.715 | 0.447→0.423 |
+| 07 경제총조사 | 4→5 | 3 | 0.516 | 0.630→0.570 |
+| 08 가계금융 | 7→8 | 5 | 0.787 | 0.581→0.534 |
+| 10 부여채용 | 16 | 9 | 0.590 | 0.483 |
+| 11 중원채용 | 15 | 10 | 0.675 | 0.546 |
 
-## 다음 세션 (플랜: .claude/plans/next-session-pdf-gt-leftovers.md 갱신 3차)
+(06~08 NED 하락 = 동의서류가 미매칭(빈셀 공짜 exact)→매칭(평탄화 그리드와
+좌표 대조)으로 바뀐 정직한 반영. 표 발견율과 구조 충실도의 분해가 정확해짐)
 
-- ⓪ 스레드 발행 확인 (사용자 직접 발행 예정이었음)
-- ① pdf-table-gt 분할병합 불발 해부 (메인): 머리글 반복 rowsSum 가설 실측 →
-  matchTables 관용 → pair10 회복 측정. **채점기 수정은 전 쌍 before/after 대조 필수**
-- ② pair05 F1 0.458 오매칭 해부 (ref#2 4×2 vs pdf 14×4)
-- ③ 여유: 소액 백로그 / 렌더 차기(다단·2페이지+·도형)는 요청 시만
+## 기각·보류 실험 기록 (9차 — 재시도 시 이 함정 확인)
+
+- **세그먼트 괘선 체이닝**(같은 y, gap≤3pt 연결): pair06 문의처(셀 단위 분절
+  괘선) 복구되지만 **pair07 지원서(25x8) 셀 배치 변질**(miss 15→34, NED −0.08)
+  + coverage −7e-5. 폐기 코드는 이 세션 히스토리 참조
+- **컴포넌트 단위 합성**(groupConnectedLines별 + y-스팬 70% 가드): ice-geomjeong
+  문제형식 열 이탈은 고치지만 **pair10 반환청구서(p18)에서 합성→3x3 그리드→
+  shouldDemoteTable이 문단 강등→표 소멸→매칭 −1**. 1행 다열 스킵과 demote의
+  연쇄를 풀어야 재시도 가능
+- **전역 합성(채택안)의 보수성은 의도된 특성**: 폭이 비슷한 표가 쌓인 페이지에선
+  그룹이 뭉쳐 발동 안 함 — 그래서 pair05 외 5쌍이 비트 동일(수술적)이었음
+- **ice-geomjeong 잔여 병리**(백로그): 검정고시 응시자격 박스 — 라벨 탭 글상자
+  (제목 박스가 큰 박스 상단에 겹침)의 짧은 수직선(66.8/301.8)이 열 경계가 되어
+  프로즈가 찢김. 음영 필터가 라벨 테두리를 살리며 노출됨(v0에도 유사 병리,
+  형태만 다름). 파일 coverage 0.99953→0.99611 (게이트 여유)
+
+## 다음 세션 후보
+
+- pair06 문의처(세그먼트 괘선) — 체이닝을 **콜리니어 이웃이 같은 컴포넌트일 때만**
+  거는 정밀화 / pair07 지원서 셀 이동 원인(콜XS 미세 이동 vs bbox 흡수) 해부부터
+- ice-geomjeong 라벨 탭 병리 — 짧은 수직선의 열 지지도(support) 필터 검토
+- 동의서류 셀 표현 차는 수용 종결 (매칭은 회복됨, 좌표 채점은 구조 차이 반영이 정직)
+- 소액 백로그: hml bizinfo 0.973(글상자) / eval-perf-2024.pdf 0.9785(벡터 아웃라인
+  OCR) / A-5 폼 정오 / hwp3 합성 픽스처
+- 렌더 차기(다단·2페이지+·도형)는 요청 시만
 
 ## 재론 금지 (기존 유지 + 신규)
 
@@ -67,17 +91,22 @@
 - pdf-table-gt 모수 = 최상위 2×2+ / docx vMerge val 없음=계속 셀
 - **pdf 헤어라인 tolerance 완화 금지** (6차 실험 — GT 양방향 회귀)
 - **수식 왕복 정합 유지** (고정점 테스트 잠금, 예약어 따옴표는 변환 전 원문에만)
-- **렌더 신규**: SVG width/height pt 단위 유지(px=25% 축소) / horzsize=줄 영역 폭
-  (통짜 textLength 금지, 마지막 줄만 정렬 분기) / 렌더는 한컴 저장본 전용
-  (markdownToHwpx 산출물 lineseg 없음 → 의도된 에러)
+- **렌더**: SVG width/height pt 단위(px=25% 축소) / horzsize=줄 영역 폭 / 한컴 저장본 전용
+- **신규(9차)**: 분할병합 rowsSum 관용 재론 금지(발동 대상 없음 실측) /
+  개방변 합성을 컴포넌트 단위로 옮길 땐 demote 연쇄(p18)와 체이닝 부작용(pair07)
+  전 쌍 대조 필수 / bagExtra는 매칭 전용 — 셀 채점에 섞지 말 것
 - ⚠ hash-sweep EXTS에 .hml 미포함 — hml 파서 검증은 md 해시 별도 대조
 
 ## 코퍼스/도구 메모
 
 - 실파일 코퍼스(gitignore): review/ 45 · hwp5/ 13+30 · pdf/ 42 · pairs/ 26 · formats/ 27
 - 게이트 일괄: `npm run bench:gate`(5체인) / PDF표: `node bench/pdf-table-gt.mjs`
-- npm publish: `~/.npmrc` bypass 2FA granular 토큰 유효. 릴리스 관례 = release 커밋
-  (CHANGELOG+README `## vX.Y.Z 변경사항`+package.json) + 경량 태그 + npm publish + gh release
+- **9차 진단 도구**(bench/out/, gitignore): `diag-lines.mts`(선 추출→전처리→그리드
+  단계 계측), `diag-raw.mts`(raw 선+curveTo 통계), `diag-ops.mts`(영역 교차 경로
+  원본 덤프+CTM). 스크래치: diag-pair.mjs(쌍 매칭 해부)·diag-deep.mjs(표 전체
+  구조+중첩)·diag-rows.mjs(행 시그니처 대조) — 세션 스크래치라 휘발, 필요 시 재작성
+- npm publish: `~/.npmrc` bypass 2FA granular 토큰 유효. 릴리스 관례 = feat 커밋 →
+  release 커밋(CHANGELOG+README `## vX.Y.Z 변경사항`+package.json) + 경량 태그 +
+  npm publish + gh release
 - 렌더 재현: `node dist/cli.js render <hwpx> -o out.svg` → headless Chrome
-  `--window-size=794,1123` 스크린샷. 검증 3파일 = review/36427937·hwp5/10772982_4·10772982_결재문서
-- 스레드 카드 원본: 세션 스크래치(휘발). 재제작 시 기안문 패러디 HTML → 1080×1350 스샷
+  `--window-size=794,1123` 스크린샷

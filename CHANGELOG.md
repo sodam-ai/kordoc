@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] - 2026-07-03
+
+### Added
+
+- **PDF 개방 변 합성 체인 뷰** — `closeOpenTableEdges`의 끝점 정렬 판정을 콜리니어
+  세그먼트(셀 단위로 쪼개 그은 괘선)를 논리 괘선으로 이은 체인 뷰 기준으로 전환.
+  물리 수평선은 수정하지 않아 셀 배치 부작용 없이, 중간 괘선이 셀 경계마다 분절된
+  표(문의처 2x4 등)의 좌우 개방 변이 닫힘
+
+### Fixed
+
+- **라벨 헤더 표 오강등** — 첫 행 전체가 마커 없는 짧은 라벨이고 본문에 내용이
+  있는 표는 텍스트 박스 강등(`shouldDemoteTable`)에서 면제. 본문 셀의 ○/ㅇ
+  항목부호(채용분야|담당업무|우대조건)와 양식 표의 빈 기입란(성명|응시분야|비고)이
+  텍스트 박스 패턴으로 오인돼 문단으로 강등되던 문제 — pdf 코퍼스 14파일에서
+  예산표·라벨 열·대비표 등이 표로 복구 (coverage 무후퇴)
+
+### Benchmark
+
+- pdf표GT 트랙 3픽스 + 모수 예외: ⓐbag 교집합 0 매칭 차단 (dims-only 누수가
+  진짜 짝을 선점하던 것 해소) ⓑ전체 텍스트 접두 유사도 폴백 (세밀 분할 프로즈
+  박스 구제) ⓒ흐름띠·거의 빈 표 모수 제외 (hwpx가 표를 레이아웃 도구로 쓴 표현
+  차, 양측 대칭). 게이트 재잠금: 매칭 0.90→0.98 / exact 0.58→0.65 /
+  cellF1 0.65→0.72 / cellExact 0.67→0.69 / NED 0.49→0.52
+
 ## [3.11.0] - 2026-07-03
 
 ### Added

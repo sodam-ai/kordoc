@@ -28,11 +28,16 @@ const gateMode = args.includes("--gate")
 const verbose = args.includes("--verbose")
 const docFilter = (args.find(a => a.startsWith("--doc=")) ?? "").split("=")[1] ?? null
 
-// 게이트 = 무후퇴 플로어 (2026-07-03 기준선: fwd 0.947273 / bwd 0.946838 / tableExact 0.727848
-// / cellExact 0.991652). 기준선 미달 원인 4종(개선 백로그): ①헤딩 왕복 소실(#→일반 문단)
-// ②리스트 마커 변형(-→·)·중첩 평탄화·번호 재시작 ③마스킹 별표 런이 md HR로 소비(파서 출력
-// 미이스케이프) ④셀 내 <img> 상대참조 드롭(바이너리 없음 — 수용). 개선 시 플로어 상향.
-const GATES = { fwdCovMicro: 0.945, bwdCovMicro: 0.94, tableExact: 0.72, cellExact: 0.985, genErrors: 0 }
+// 게이트 = 무후퇴 플로어 (기준선 2026-07-03 수술 후: fwd 0.999632 / bwd 0.99915 /
+// tableExact 0.727848 / cellExact 0.991812 — 2회 안정 확인 후 상향).
+// 2026-07-03 수술 3종: ①헤딩 왕복 소실 → generator OUTLINE paraPr (corpus 75건 md엔
+// 헤딩 0개라 headingErrors 게이트는 fixture 트랙 h1~h6이 지킨다. h5/h6은 paraPr 매핑
+// 축약으로 h4 복원 = 의도된 압축) ②리스트 번호 재시작·마커 변형(-→·) → MdBlock.marker
+// 원본 보존 ③마스킹 별표 런 md HR/볼드 오독 → 파서 escapeGfm에 * 추가 + 생성기 센티널
+// 언이스케이프 (fwd 0.947→0.9996의 주역).
+// 잔여(수용): ④셀 내 <img> → "image" 텍스트化 (바이너리 없음) / hr → 대시 런 비대칭 /
+// fixture basic의 인라인 강조(**굵게**) 마커 소실 — IR이 블록 단위라 재출력 불가.
+const GATES = { fwdCovMicro: 0.999, bwdCovMicro: 0.998, tableExact: 0.72, cellExact: 0.99, genErrors: 0, headingErrors: 0 }
 
 const round = (x, d = 6) => (x === null || x === undefined ? null : +x.toFixed(d))
 
@@ -86,6 +91,8 @@ function scoreRound(m0, blocks0, rt) {
 // ─── fixture 트랙 (합성 md + 공문서 모드) ───────────
 const FIXTURES = [
   { name: "basic", md: "# 제목1\n\n본문 **굵게** *기울임* `코드`\n\n## 제목2\n\n- 리스트1\n- 리스트2\n  - 하위 항목\n\n> 인용문\n" },
+  // 헤딩 레벨 무결성 게이트 — 왕복 후 레벨·텍스트 시퀀스가 min(level,4) 매핑과 일치해야 함
+  { name: "headings", md: "# 장제목\n\n## 절제목\n\n### 관제목\n\n#### 항제목\n\n##### 목제목\n\n###### 세목제목\n\n본문 문단.\n" },
   { name: "table-gfm", md: "| 구분 | 금액 | 비고 |\n| --- | --- | --- |\n| 세입 | 1,000 | 증가 |\n| 세출 | 900 | 감소 |\n" },
   { name: "table-merge", md: '<table><tr><th rowspan="2">구분</th><th colspan="2">내역</th></tr><tr><td>세입</td><td>세출</td></tr><tr><td>합계</td><td>1,000</td><td>900</td></tr></table>\n' },
   { name: "mixed", md: "# 사업 개요\n\n○ 기간: 2026년 상반기\n\n| 항목 | 값 |\n| --- | --- |\n| 예산 | 1억 |\n\n마무리 문단입니다.\n" },
@@ -125,7 +132,11 @@ for (const file of files) {
   }
 }
 
+// 헤딩 시퀀스 — 레벨은 min(4) 매핑 (paraPr h4가 h4~h6 겸용), 텍스트는 원문 그대로
+const headingSeq = md => [...md.matchAll(/^(#{1,6}) (.+)$/gm)].map(m => `${Math.min(m[1].length, 4)}|${m[2].trim()}`)
+
 const fixtureRows = []
+let headingErrors = 0
 for (const f of FIXTURES) {
   try {
     const rt = await roundtrip(f.md, f.opts)
@@ -136,7 +147,11 @@ for (const f of FIXTURES) {
     const p1 = normKey(mdToPlain(rt.m1).text)
     const fwd = coverage(trigramBag(p0), trigramBag(p1))
     const bwd = coverage(trigramBag(p1), trigramBag(p0))
-    fixtureRows.push({ name: f.name, ok: true, gongmun: !!f.opts, fwdCov: round(fwd.coverage), bwdCov: round(bwd.coverage), refGrams: fwd.total })
+    // 헤딩 왕복 무결성 — 레벨(min4)+텍스트 시퀀스 완전 일치 (2026-07-03 수술 후 게이트)
+    const h0 = headingSeq(f.md), h1 = headingSeq(rt.m1)
+    const headingOk = h0.length === h1.length && h0.every((x, i) => x === h1[i])
+    if (!headingOk) headingErrors++
+    fixtureRows.push({ name: f.name, ok: true, gongmun: !!f.opts, fwdCov: round(fwd.coverage), bwdCov: round(bwd.coverage), refGrams: fwd.total, headings: { ref: h0.length, out: h1.length, ok: headingOk } })
   } catch (err) {
     fixtureRows.push({ name: f.name, ok: false, stage: "generate", error: String(err?.message ?? err).slice(0, 300) })
   }
@@ -158,6 +173,7 @@ const gates = {
   tableExact: { value: round(tableExactRate), threshold: GATES.tableExact, pass: tableExactRate >= GATES.tableExact },
   cellExact: { value: round(cellExactRate), threshold: GATES.cellExact, pass: cellExactRate >= GATES.cellExact },
   genErrors: { value: genErrors, threshold: GATES.genErrors, pass: genErrors <= GATES.genErrors },
+  headingErrors: { value: headingErrors, threshold: GATES.headingErrors, pass: headingErrors <= GATES.headingErrors },
 }
 const pass = Object.values(gates).every(g => g.pass)
 
@@ -185,6 +201,6 @@ console.log(`  표: ref=${tblRef} exact=${tblExact} | 셀 ${cellExact}/${cellTot
 console.log("[worst fwd 5]")
 for (const w of report.worstFwd.slice(0, 5)) console.log(`  ${w.fwdCov} bwd=${w.bwdCov} ${w.file}`)
 console.log("[fixtures]")
-for (const f of fixtureRows) console.log(`  ${f.ok ? (f.gongmun ? "공문" : "  ") : "ERR"} fwd=${f.fwdCov ?? "-"} bwd=${f.bwdCov ?? "-"} ${f.name}${f.error ? " — " + f.error : ""}`)
+for (const f of fixtureRows) console.log(`  ${f.ok ? (f.gongmun ? "공문" : "  ") : "ERR"} fwd=${f.fwdCov ?? "-"} bwd=${f.bwdCov ?? "-"}${f.headings?.ref ? ` 헤딩${f.headings.ok ? "✓" : "✗"} ${f.headings.out}/${f.headings.ref}` : ""} ${f.name}${f.error ? " — " + f.error : ""}`)
 console.log(`report → bench/out/roundtrip.json | ${pass ? "PASS ✅" : "FAIL ❌"}${gateMode ? "" : " (보고 전용 — --gate 시 exit code 반영)"}`)
 if (gateMode && !pass) process.exit(1)

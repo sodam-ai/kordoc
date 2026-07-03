@@ -4,13 +4,21 @@
 // coverage(텍스트 trigram)가 못 보는 구조 붕괴(2단 조판 사건 류)를 메우는 트랙.
 //
 // 주의: pdf는 페이지 단위로 표가 쪼개지고(분할표 병합 보정이 일부 흡수) 병합·머리글
-// 표현이 hwpx와 다를 수 있어 만점이 목표가 아니다 — 기준선 잠금 후 무후퇴 감시.
-// 게이트 편입은 개선 작업으로 수치가 자리 잡은 후 (현재 --gate 는 파싱 실패만 실패 처리).
+// 표현이 hwpx와 다를 수 있어 만점이 목표가 아니다 — 무후퇴 플로어 감시.
 //
-// 기준선 (2026-07-03, 2회 연속 동일): ref 표 72 | 매칭 0.8194 | exact 0.5139 |
-// cellF1 0.604629 | cellExact 0.651362 | contentNED 0.491512
-// 미달 성격 (pair11 상세 분석): 진짜 표 12/18 exact — 잔여는 ①hwpx 25x14→pdf 24x10
-// 같은 병합 열 표현 차 ②pdf 미감지 표의 DP 오매칭 연쇄 ③잉여 pdf 표(과분할).
+// 기준선 (2026-07-03 순서구제 도입 후, 2회 연속 동일): ref 표 72 | 매칭 0.847222 |
+// exact 0.541667 | cellF1 0.632406 | cellExact 0.664591 | contentNED 0.500817
+// (구 기준선 매칭 0.8194/exact 0.5139 — 2단 페이지 표 순서 역전으로 DP가 그리드
+//  동일 표를 버리던 것을 matchTables 순서 예외 구제로 회복, pair06 +2)
+//
+// 잔여 미달 성격 (2026-07-03 정밀 분석 — 개선 시도와 결론):
+// ①병합 열 표현 차 = 1.5~3pt 미세 오프셋 경계를 GT(hwpx 그리드)가 문서마다 다르게
+//   모델링 (pair06 응시원서는 12열로 분리 / pair08 신청서는 9열로 통합). 파서
+//   tolerance를 내리면(coordMergeTol 8→1.5 실험) pair06 22x9→22x12로 GT 일치하지만
+//   pair08 22x10→22x13 유령 열로 F1 0.373→0 붕괴 — pdf 쪽에서 두 경우를 구분할
+//   증거가 없어 철회. 고정 임계값으론 원리적으로 불가한 표현 차로 분류.
+// ②미감지 표(pair05 ref#2 등)의 셀 분할 표현 차 (결격사유 박스 3x2 vs 18x3)
+// ③분할병합 보정 불발 — 머리글 반복 시 rowsSum 불일치 (미해결 백로그)
 //
 // 사용법: node bench/pdf-table-gt.mjs [--gate] [--doc=부분문자열] [--verbose]
 
@@ -26,6 +34,10 @@ const verbose = args.includes("--verbose")
 const docFilter = (args.find(a => a.startsWith("--doc=")) ?? "").split("=")[1] ?? null
 
 const round = (x, d = 6) => (x === null || x === undefined ? null : +x.toFixed(d))
+
+// 무후퇴 플로어 (기준선 2026-07-03: 매칭 0.847222 / exact 0.541667 / cellF1 0.632406
+// / cellExact 0.664591 / NED 0.500817 — 2회 안정 확인 후 잠금)
+const GATES = { matchedRate: 0.845, exactRate: 0.54, cellF1: 0.63, cellExactRate: 0.66, contentNED: 0.5, parseErrors: 0 }
 
 const t0 = performance.now()
 const dir = join(root, "corpus", "pairs")
@@ -84,6 +96,7 @@ for (const base of pairs) {
     row.matched = s.tableCount - s.unmatchedRef
     row.exact = s.exactCount
     row.splitMerged = s.splitTables
+    row.reordered = s.reordered
     row.cellF1 = round(s.cellF1)
     row.cellExactRate = round(s.cellExactRate)
     row.contentNED = round(s.contentNED)
@@ -124,10 +137,24 @@ console.log(`  ref 표 ${summary.refTables} | 매칭 ${round(summary.matchedRate
 console.log(`  cellF1 ${summary.cellF1} | cellExact ${summary.cellExactRate} | contentNED ${summary.contentNED}`)
 for (const r of rows) {
   if (!r.ok) { console.log(`  ❌ ${r.pair}: ${r.error}`); continue }
-  console.log(`  ${r.pair}: ref ${r.refTables} → 매칭 ${r.matched} (분할병합 ${r.splitMerged}) exact ${r.exact} | F1 ${r.cellF1} NED ${r.contentNED} | pdf잉여 ${r.unmatchedIr}`)
+  console.log(`  ${r.pair}: ref ${r.refTables} → 매칭 ${r.matched} (분할병합 ${r.splitMerged}·순서구제 ${r.reordered}) exact ${r.exact} | F1 ${r.cellF1} NED ${r.contentNED} | pdf잉여 ${r.unmatchedIr}`)
+}
+
+// 게이트 판정 — 무후퇴 플로어 (2026-07-03 bench:gate 편입)
+const gates = {
+  matchedRate: { value: summary.matchedRate, threshold: GATES.matchedRate, pass: summary.matchedRate >= GATES.matchedRate },
+  exactRate: { value: summary.exactRate, threshold: GATES.exactRate, pass: summary.exactRate >= GATES.exactRate },
+  cellF1: { value: summary.cellF1, threshold: GATES.cellF1, pass: summary.cellF1 >= GATES.cellF1 },
+  cellExactRate: { value: summary.cellExactRate, threshold: GATES.cellExactRate, pass: summary.cellExactRate >= GATES.cellExactRate },
+  contentNED: { value: summary.contentNED, threshold: GATES.contentNED, pass: summary.contentNED >= GATES.contentNED },
+  parseErrors: { value: parseErrors, threshold: GATES.parseErrors, pass: parseErrors <= GATES.parseErrors },
+}
+const pass = Object.values(gates).every(g => g.pass)
+for (const [k, g] of Object.entries(gates)) {
+  if (!g.pass) console.log(`  ❌ ${k} ${g.value} (기준 ${g.threshold})`)
 }
 
 await mkdir(join(root, "out"), { recursive: true })
-await writeFile(join(root, "out", "pdf-table.json"), JSON.stringify({ generatedAt: new Date().toISOString(), summary, rows }, null, 1))
-console.log(`report → bench/out/pdf-table.json${gateMode ? (parseErrors ? " | FAIL ❌" : " | PASS ✅") : ""}`)
-if (gateMode && parseErrors) process.exit(1)
+await writeFile(join(root, "out", "pdf-table.json"), JSON.stringify({ generatedAt: new Date().toISOString(), summary, pass, gates, rows }, null, 1))
+console.log(`report → bench/out/pdf-table.json | ${pass ? "PASS ✅" : "FAIL ❌"}${gateMode ? "" : " (보고 전용 — --gate 시 exit code 반영)"}`)
+if (gateMode && !pass) process.exit(1)

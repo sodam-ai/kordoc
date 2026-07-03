@@ -167,7 +167,29 @@ export function matchTables(refTables, irGrids) {
       if (merged.has(i)) break
     }
   }
-  return { pairs, merged, usedIr }
+  // 순서 예외 구제 (2026-07-03): 2단 조판 페이지에서 표의 물리 방출 순서가 문서
+  // 흐름과 어긋나면 (pair06 p1 — pdf가 우단 표를 먼저 방출) 순서보존 DP가 그리드
+  // 동일한 표를 버린다. 잔여 미매칭 ref ↔ 미사용 IR을 전역 그리디(고유사도 우선)로
+  // 구제하되, 문턱을 DP(0.2)보다 훨씬 높여 진짜 구조 붕괴가 회복으로 위장하는 것을
+  // 막는다. 이 트랙의 감시 대상은 그리드 무결성이고 순서는 coverage/order 트랙 소관.
+  const REORDER_MIN_SIM = 0.55
+  let reordered = 0
+  const cand = []
+  for (let i = 0; i < n; i++) {
+    if (pairs[i] !== -1 || merged.has(i)) continue
+    for (let j = 0; j < m; j++) {
+      if (usedIr.has(j)) continue
+      if (sim[i][j] >= REORDER_MIN_SIM) cand.push([sim[i][j], i, j])
+    }
+  }
+  cand.sort((a, b) => b[0] - a[0])
+  for (const [, i, j] of cand) {
+    if (pairs[i] !== -1 || usedIr.has(j)) continue
+    pairs[i] = j
+    usedIr.add(j)
+    reordered++
+  }
+  return { pairs, merged, usedIr, reordered }
 }
 
 function mergeGrids(grids) {
@@ -206,7 +228,7 @@ function stripHeadingDecor(refText, irText, headingLines) {
  * 반환: 표 단위 exact, 셀 단위 F1(GriTS-Top 등가), 셀 내용 exact/NED + 상세
  */
 export function scoreTables(refTables, irGrids) {
-  const { pairs, merged, usedIr } = matchTables(refTables, irGrids)
+  const { pairs, merged, usedIr, reordered } = matchTables(refTables, irGrids)
   const details = []
   let exactCount = 0
   const f1s = []
@@ -287,6 +309,7 @@ export function scoreTables(refTables, irGrids) {
     contentNED: contentDen ? contentNum / contentDen : 1,
     splitTables,
     decorForgiven,
+    reordered: reordered ?? 0,
     unmatchedRef: details.filter(d => !d.matched).length,
     unmatchedIr: irGrids.length - usedIr.size,
     details,

@@ -58,7 +58,10 @@ const round = (x, d = 6) => (x === null || x === undefined ? null : +x.toFixed(d
 
 // 무후퇴 플로어 (기준선 2026-07-03 10차: 매칭 0.985507 / exact 0.652174 / cellF1 0.724023
 // / cellExact 0.697712 / NED 0.523722 — 2회 안정 확인 후 잠금)
-const GATES = { matchedRate: 0.98, exactRate: 0.65, cellF1: 0.72, cellExactRate: 0.69, contentNED: 0.52, parseErrors: 0 }
+// reorderedMax: 순서구제 무증가 플로어 (2026-07-05 실측 3 = pair06 2단 조판 정당 케이스).
+//   순서구제가 공용 matchTables에 있어 표 방출순서 회귀가 재짝지음으로 green 위장 가능 (리뷰 #15)
+// minPairs/minRefTables: 모수 하한 — 코퍼스 소실 시 rate(0/0)=1 조용한 만점 방지 (리뷰 #14)
+const GATES = { matchedRate: 0.98, exactRate: 0.65, cellF1: 0.72, cellExactRate: 0.69, contentNED: 0.52, parseErrors: 0, reorderedMax: 3, minPairs: 3, minRefTables: 35 }
 
 const t0 = performance.now()
 const dir = join(root, "corpus", "pairs")
@@ -72,7 +75,7 @@ const pairs = names
 
 const rows = []
 let parseErrors = 0
-const agg = { refTables: 0, matched: 0, exact: 0, cellTotal: 0, cellExact: 0, contentNum: 0, contentDen: 0, f1Sum: 0 }
+const agg = { refTables: 0, matched: 0, exact: 0, cellTotal: 0, cellExact: 0, contentNum: 0, contentDen: 0, f1Sum: 0, reordered: 0 }
 
 for (const base of pairs) {
   const row = { pair: base }
@@ -165,6 +168,7 @@ for (const base of pairs) {
     agg.contentNum += s.contentNum
     agg.contentDen += s.contentDen
     agg.f1Sum += s.cellF1 * s.tableCount
+    agg.reordered += s.reordered ?? 0
   } catch (err) {
     parseErrors++
     row.ok = false
@@ -177,6 +181,7 @@ const summary = {
   pairs: rows.length,
   parseErrors,
   refTables: agg.refTables,
+  reordered: agg.reordered,
   matchedRate: round(agg.refTables ? agg.matched / agg.refTables : 1),
   exactRate: round(agg.refTables ? agg.exact / agg.refTables : 1),
   cellF1: round(agg.refTables ? agg.f1Sum / agg.refTables : 1),
@@ -201,6 +206,13 @@ const gates = {
   cellExactRate: { value: summary.cellExactRate, threshold: GATES.cellExactRate, pass: summary.cellExactRate >= GATES.cellExactRate },
   contentNED: { value: summary.contentNED, threshold: GATES.contentNED, pass: summary.contentNED >= GATES.contentNED },
   parseErrors: { value: parseErrors, threshold: GATES.parseErrors, pass: parseErrors <= GATES.parseErrors },
+  reordered: { value: summary.reordered, threshold: GATES.reorderedMax, pass: summary.reordered <= GATES.reorderedMax },
+  // 모수 하한 — 부분 실행(--doc)은 제외
+  population: {
+    value: `pairs ${summary.pairs}/refTables ${summary.refTables}`,
+    threshold: `≥ ${GATES.minPairs}/${GATES.minRefTables}`,
+    pass: docFilter != null || (summary.pairs >= GATES.minPairs && summary.refTables >= GATES.minRefTables),
+  },
 }
 const pass = Object.values(gates).every(g => g.pass)
 for (const [k, g] of Object.entries(gates)) {

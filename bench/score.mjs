@@ -501,13 +501,24 @@ const hwp5Agg = (() => {
   }
 })()
 
-const overallPass = (hwpxAgg?.pass ?? true) && (pdfAgg?.pass ?? true) && (hwp5Agg?.pass ?? true) && failures.length === 0
+// 모수 하한 (2026-07-05 실측 hwpx 347/pdf 50/hwp쌍 23의 ~절반) — 트랙 폴더 소실 시
+// agg가 null이 되고 ?? true 로 조용한 만점 PASS가 나는 것 방지 (리뷰 #14).
+// 부분 실행(subPath)은 의도된 축소라 스킵.
+const MIN_POP = { hwpx: 170, pdf: 25, hwpPairs: 12 }
+const population = {
+  value: `hwpx ${hwpxDocs.length}/pdf ${pdfDocs.length}/hwp쌍 ${hwpPairs.length}`,
+  threshold: `≥ ${MIN_POP.hwpx}/${MIN_POP.pdf}/${MIN_POP.hwpPairs}`,
+  pass: subPath !== "" ||
+    (hwpxDocs.length >= MIN_POP.hwpx && pdfDocs.length >= MIN_POP.pdf && hwpPairs.length >= MIN_POP.hwpPairs),
+}
+const overallPass = (hwpxAgg?.pass ?? true) && (pdfAgg?.pass ?? true) && (hwp5Agg?.pass ?? true) && failures.length === 0 && population.pass
 
 const report = {
   generatedAt: new Date().toISOString(),
   corpus: subPath || "(all)",
   elapsedMs: Math.round(performance.now() - t0),
   overallPass,
+  population,
   failures,
   hwpx: hwpxAgg ? { ...hwpxAgg, docsDetail: hwpxDocs } : null,
   pdf: pdfAgg ? { ...pdfAgg, docsDetail: pdfDocs } : null,
@@ -574,5 +585,6 @@ if (failures.length) {
   for (const f of failures) console.log(`  [${f.stage}] ${f.file.slice(0, 70)}: ${String(f.error).slice(0, 120)}`)
 }
 
+if (!population.pass) console.log(`\n❌ 모수 하한 미달: ${population.value} (기준 ${population.threshold}) — 코퍼스 소실/미동기 의심`)
 console.log(`\nreport → bench/out/score.json | 전체 ${overallPass ? "PASS ✅" : "FAIL ❌"}`)
 process.exitCode = overallPass ? 0 : 1

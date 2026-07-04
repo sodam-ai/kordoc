@@ -311,11 +311,21 @@ for (const kind of ["docx", "xlsx", "hml"]) {
 }
 
 const rate = a => (a.t ? a.m / a.t : 1)
+// 모수 하한 (2026-07-05 실측 docx 7/xlsx 11/hml 9의 ~절반) — 폴더 누락·미동기 시
+// catch{continue}+rate(0/0)=1 로 조용한 만점 PASS가 나는 것 방지 (리뷰 #14)
+const MIN_POP = { docx: 4, xlsx: 6, hml: 5 }
+const kindCount = k => rows.filter(r => r.kind === k).length
 const gates = {
   parseErrors: { value: parseErrors, threshold: GATES.parseErrors, pass: parseErrors === 0 },
   docxRecall: { value: round(rate(agg.docx)), threshold: GATES.docxRecall, pass: rate(agg.docx) >= GATES.docxRecall },
   xlsxStrRecall: { value: round(rate(agg.xlsxStr)), threshold: GATES.xlsxStrRecall, pass: rate(agg.xlsxStr) >= GATES.xlsxStrRecall },
   hmlRecall: { value: round(rate(agg.hml)), threshold: GATES.hmlRecall, pass: rate(agg.hml) >= GATES.hmlRecall },
+  population: {
+    value: `docx ${kindCount("docx")}/xlsx ${kindCount("xlsx")}/hml ${kindCount("hml")}`,
+    threshold: `≥ ${MIN_POP.docx}/${MIN_POP.xlsx}/${MIN_POP.hml}`,
+    pass: docFilter != null ||
+      (kindCount("docx") >= MIN_POP.docx && kindCount("xlsx") >= MIN_POP.xlsx && kindCount("hml") >= MIN_POP.hml),
+  },
 }
 const pass = Object.values(gates).every(g => g.pass)
 

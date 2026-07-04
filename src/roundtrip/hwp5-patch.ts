@@ -1013,10 +1013,29 @@ function stageParaPatch(
   scan.repl.set(para.charShapeIdx, cs.buf)
   newHeader.writeUInt16LE(cs.count, 12)
 
-  // LINE_SEG는 원본 그대로 둔다 — 한컴은 줄 레이아웃(LINE_SEG)을 재계산하지 않고 그대로
-  // 렌더하므로, 세그먼트를 줄이면(여러 줄→1줄) 글자가 한 줄에 겹쳐 박힌다. 텍스트 길이가
-  // 바뀌어도 한컴이 마지막 세그 기준으로 재배치하므로 원본 유지가 안전하다.
-  // (실측: 원본유지는 길이 변경에도 정상 오픈, 단일 세그먼트화하면 글자 겹침)
+  // LINE_SEG — 강제 줄바꿈(0x000a)이 없으면 원본 유지(한컴은 LINE_SEG를 재계산하지 않고 그대로
+  // 렌더하므로 세그먼트 축소는 글자 겹침 유발 → 원본 유지가 안전). 줄바꿈이 있으면 한컴이
+  // 1세그먼트를 한 줄로 렌더해 줄바꿈을 씹으므로, 줄 수만큼 세그먼트를 합성해 실제로 나눈다.
+  const lineSegRec = records[para.lineSegIdx]
+  if (newRaw.includes("\n") && lineSegRec.data.length >= 36) {
+    // 실측: 실파일 LINE_SEG는 세그먼트마다 vPos만 pitch(=lineH+lineSpc)씩 증가, 나머지 기하는
+    // 세그먼트 전체 동일 → seg0을 통째 복사하고 textpos·vPos만 줄마다 바꾼다.
+    const seg0 = lineSegRec.data.subarray(0, 36)
+    const vPos0 = seg0.readInt32LE(4)
+    const pitch = seg0.readInt32LE(8) + seg0.readInt32LE(20)  // lineH + lineSpc
+    const lines = newRaw.split("\n")
+    const segs: Buffer[] = []
+    let pos = seg.prefixUnits  // newRaw 시작 WCHAR 위치
+    for (let k = 0; k < lines.length; k++) {
+      const s = Buffer.from(seg0)
+      s.writeUInt32LE((k === 0 ? 0 : pos) >>> 0, 0)   // textpos: 첫 줄은 문단 처음(prefix 포함)
+      s.writeInt32LE(vPos0 + k * pitch, 4)            // vPos: 줄마다 한 줄 아래로
+      segs.push(s)
+      pos += lines[k].length + 1                      // 다음 줄 시작 = 이 줄 문자수 + 줄바꿈 1
+    }
+    scan.repl.set(para.lineSegIdx, Buffer.concat(segs))
+    newHeader.writeUInt16LE(lines.length, 16)         // lineSegCount
+  }
 
   scan.repl.set(para.headerIdx, newHeader)
   return 1

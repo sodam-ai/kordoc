@@ -31,6 +31,16 @@ function utf16(s: string): Buffer {
   return Buffer.from(s, "utf16le")
 }
 
+/** 현실적 LINE_SEG 1세그(vPos·lineH=1200·textH=1200·lineSpc=120 → pitch 1320) — 다중줄 세그 합성 검증용 */
+function lineSeg36(vPos = 0): Buffer {
+  const ls = Buffer.alloc(36)
+  ls.writeInt32LE(vPos, 4)   // 줄 세로 위치
+  ls.writeInt32LE(1200, 8)   // 줄 높이
+  ls.writeInt32LE(1200, 12)  // 텍스트 부분 높이
+  ls.writeInt32LE(120, 20)   // 줄 간격
+  return ls
+}
+
 /** PARA_HEADER(24B) + PARA_TEXT(+0x0d) + CHAR_SHAPE(8B) + LINE_SEG(36B) */
 function paragraph(text: string, level = 0): Buffer {
   const header = Buffer.alloc(24)
@@ -44,7 +54,7 @@ function paragraph(text: string, level = 0): Buffer {
     rec(0x42, level, header),
     rec(0x43, level + 1, textData),
     rec(0x44, level + 1, Buffer.alloc(8)),
-    rec(0x45, level + 1, Buffer.alloc(36)),
+    rec(0x45, level + 1, lineSeg36()),
   ])
 }
 
@@ -472,6 +482,22 @@ describe("patchHwp — 셀 다중줄 (강제 줄바꿈 0x0a)", () => {
     assert.equal(recs[idx].data.toString("utf16le"), "가나\n다라\r")  // 0x0a=\n, 0x0d=\r
     assert.equal(recs[idx].data.readUInt16LE(4), 0x000a, "3번째 WCHAR가 강제 줄바꿈 0x000a")
     assert.equal(recs[idx - 1].data.readUInt32LE(0), 6, "nChars = 5글자 + 문단끝 1")
+  })
+
+  it("다중줄 채움은 LINE_SEG를 줄 수만큼 합성 — 1세그면 한컴이 줄바꿈을 씹음(실측)", async () => {
+    const hwp = buildHwp([table2x2([["주소", "서울"], ["점수", "80"]])])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    const r = await patchHwp(hwp, md.replace("| 주소 | 서울 |", "| 주소 | 가나<br>다라 |"))
+    assert.equal(r.applied, 1, `${JSON.stringify(r.skipped)}`)
+    const cfb = CFB.parse(Buffer.from(r.data!))
+    const recs = readRecords(Buffer.from(CFB.find(cfb, "/BodyText/Section0").content))
+    const ti = recs.findIndex(rc => rc.tagId === TAG_PARA_TEXT && rc.data.toString("utf16le").startsWith("가나"))
+    assert.equal(recs[ti - 1].data.readUInt16LE(16), 2, "PARA_HEADER lineSegCount=2")
+    const ls = recs.slice(ti).find(rc => rc.tagId === 0x45)!  // 이 문단의 LINE_SEG
+    assert.equal(ls.data.length, 72, "LINE_SEG 2세그(72B)")
+    assert.equal(ls.data.readInt32LE(0), 0, "seg0 textpos=0")
+    assert.equal(ls.data.readInt32LE(36), 3, "seg1 textpos=3 (가나=2 + 줄바꿈 1)")
+    assert.equal(ls.data.readInt32LE(40) - ls.data.readInt32LE(4), 1320, "seg1이 pitch(lineH+lineSpc=1320)만큼 아래")
   })
 
   it("HTML 병합셀에 줄 추가 — 넘치는 줄을 마지막 문단에 강제 줄바꿈으로 병합", async () => {

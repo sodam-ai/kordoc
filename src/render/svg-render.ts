@@ -109,7 +109,9 @@ interface Ctx {
   page: number
   geom: PageGeom
   styles: RenderStyles
-  images: Map<string, { dataUri: string; orgW?: number; orgH?: number }>
+  images: Map<string, { dataUri: string; symId?: string; orgW?: number; orgH?: number }>
+  /** 이미지 심볼 defs — dataURI는 여기 1회만, 본문은 <use> 참조 (occurrence당 재emit 금지) */
+  defs: string[]
   /** 검색어 형광펜 (소문자 정규화, 빈 문자열 제거) */
   highlights: string[]
   warnings: string[]
@@ -131,8 +133,10 @@ function warnOnce(ctx: Ctx, key: string, msg: string): void {
 
 // ─── 문단 모델 구축 ────────────────────────────────
 
-/** hp:t 안에서 1슬롯을 차지하는 문자형 컨트롤 (HWP5 문자 스트림 모델) */
-const CHAR_CTRL_1SLOT = new Set(["tab", "lineBreak", "hyphen", "nbSpace", "fwSpace"])
+/** hp:t 안에서 1슬롯을 차지하는 문자형 컨트롤 (HWP5 문자 스트림 모델) —
+ * 탭(0x09)은 char가 아니라 inline 컨트롤 = 8슬롯(16바이트)이라 여기 넣으면 안 된다
+ * (record.ts 0x09 처리의 i+=14와 같은 모델. 1슬롯로 세면 탭당 7슬롯씩 줄 경계가 밀린다) */
+const CHAR_CTRL_1SLOT = new Set(["lineBreak", "hyphen", "nbSpace", "fwSpace"])
 
 /** lineseg textpos 정합용 0폭 필러 슬롯 — 컨트롤이 차지하는 문자 위치를 채운다 */
 function pushFillers(chars: ParaChar[], n: number, prId: string | null): void {
@@ -159,7 +163,9 @@ function pushTextSlots(t: Element, chars: ParaChar[], prId: string | null, depth
     } else if (c.nodeType === 1) {
       const el = c as Element
       const tag = ln(el)
-      if (CHAR_CTRL_1SLOT.has(tag)) {
+      if (tag === "tab") {
+        pushFillers(chars, 8, prId) // inline 컨트롤 8슬롯 (전부 폭 0 — 탭스톱 미해석)
+      } else if (CHAR_CTRL_1SLOT.has(tag)) {
         chars.push({ ch: tag === "nbSpace" || tag === "fwSpace" ? " " : "", prId })
       } else {
         pushTextSlots(el, chars, prId, depth + 1)
@@ -280,7 +286,10 @@ function drawPara(p: Element, ox: number, oy: number, areaW: number, ctx: Ctx, d
   if (depth > 16) { warnOnce(ctx, "depth", "중첩 깊이 16 초과 — 이하 생략"); return }
   const m = buildPara(p)
   if (m.segs.length === 0) {
-    // 조판 캐시 없는 문단 — 개체만이라도 문단 원점에 배치
+    // 조판 캐시 없는 문단 — 개체만이라도 문단 원점에 배치. 텍스트는 무음 생략 금지
+    if (m.chars.some(c => c.ch !== "")) {
+      warnOnce(ctx, "no-lineseg", "조판 캐시 없는 문단 텍스트 생략 — reflow 옵션으로 합성 가능")
+    }
     for (const o of m.objs) drawObject(o, ox, oy, 0, areaW, ctx, depth)
     return
   }
@@ -672,6 +681,23 @@ function drawTable(tbl: Element, tx: number, ty: number, ctx: Ctx, depth: number
 
 // ─── 이미지 ───────────────────────────────────────
 
+/**
+ * 이미지 심볼 등록(바이너리당 1회) — dataURI를 defs에 한 번만 넣고 <use>로 참조한다.
+ * occurrence마다 dataURI를 재emit하면 반복 참조 문서에서 SVG 문자열이 기하급수로
+ * 커져 RangeError/OOM (소형 입력 DoS). viewBox 100×100 + preserveAspectRatio none
+ * 이라 <use width/height>가 기존 <image width/height> stretch와 동일하게 스케일된다.
+ */
+function imageSymbol(loaded: { dataUri: string; symId?: string }, ctx: Ctx): string {
+  if (!loaded.symId) {
+    loaded.symId = `bin${ctx.defs.length}`
+    ctx.defs.push(
+      `<symbol id="${loaded.symId}" viewBox="0 0 100 100" preserveAspectRatio="none">` +
+      `<image width="100" height="100" preserveAspectRatio="none" href="${loaded.dataUri}"/></symbol>`,
+    )
+  }
+  return loaded.symId
+}
+
 function drawPic(pic: Element, x: number, y: number, ctx: Ctx): void {
   const sz = findChildByLocalName(pic, "sz")
   const w = num(sz, "width", 5669), h = num(sz, "height", 5669)
@@ -698,14 +724,15 @@ function drawPic(pic: Element, x: number, y: number, ctx: Ctx): void {
   const cr = num(clip, "right", refW), cb = num(clip, "bottom", refH)
   const cropped =
     refW > 0 && refH > 0 && clip != null && (cl > 0 || ct > 0 || cr < refW || cb < refH) && cr > cl && cb > ct
+  const symId = imageSymbol(loaded, ctx)
   if (cropped) {
     // 참조 좌표계 viewBox로 크롭 창을 내고, 이미지는 전체 내용 크기로 깐다
     emit(ctx,
       `<svg x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" viewBox="${pt(cl)} ${pt(ct)} ${pt(cr - cl)} ${pt(cb - ct)}" preserveAspectRatio="none">` +
-      `<image x="0" y="0" width="${pt(refW)}" height="${pt(refH)}" preserveAspectRatio="none" href="${loaded.dataUri}"/></svg>`,
+      `<use href="#${symId}" x="0" y="0" width="${pt(refW)}" height="${pt(refH)}"/></svg>`,
     )
   } else {
-    emit(ctx, `<image x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}" preserveAspectRatio="none" href="${loaded.dataUri}"/>`)
+    emit(ctx, `<use href="#${symId}" x="${pt(x)}" y="${pt(y)}" width="${pt(w)}" height="${pt(h)}"/>`)
   }
 }
 
@@ -737,7 +764,9 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
   if (!secFile) throw new KordocError("Contents/section0.xml 없음 — HWPX가 아니거나 손상됨")
   const secXml = await secFile.async("string")
   if (secXml.length > MAX_DECOMPRESS_SIZE) throw new KordocError("섹션 XML이 허용 크기를 초과")
-  const hasCache = secXml.includes("linesegarray")
+  // 태그 마크업만 매치 — 본문 텍스트에 "linesegarray"가 있어도 캐시로 오판하지 않는다
+  // (본문의 <는 XML에서 &lt;로 이스케이프되므로 리터럴 <…linesegarray는 태그뿐)
+  const hasCache = /<(?:[A-Za-z][\w.-]*:)?linesegarray[\s/>]/.test(secXml)
   if (!hasCache && !options?.reflow) {
     throw new KordocError("조판 캐시(linesegarray) 없음 — 한컴에서 저장한 HWPX만 렌더 가능 (reflow 옵션으로 합성 렌더 가능)")
   }
@@ -758,10 +787,19 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
     for (const m of man.matchAll(/<[^>]*\bhref="(BinData\/[^"]+)"[^>]*\bid="([^"]+)"[^>]*>/g)) binmap.set(m[2], m[1])
   }
   // 참조된 이미지만 선로딩 (섹션 문자열 정규식 — DOM 워크 전에 async 구간 종료)
+  // 장당 캡(maxImg) 외에 개수·누적 바이트 캡 — distinct 다수/대형 반복 참조로
+  // 렌더 경로에서만 OOM 가능하던 구멍(파서 경로의 ZIP bomb 가드에 상응)
+  const MAX_IMAGE_REFS = 256
+  const MAX_TOTAL_IMAGE_BYTES = 128 * 1024 * 1024
   const images = new Map<string, { dataUri: string }>()
   const refs = new Set<string>()
   for (const m of secXml.matchAll(/binaryItemIDRef="([^"]+)"/g)) refs.add(m[1])
+  let totalImgBytes = 0
   for (const ref of refs) {
+    if (images.size >= MAX_IMAGE_REFS) {
+      warnings.push(`이미지 ${refs.size}종 중 ${MAX_IMAGE_REFS}종만 로딩 — 개수 한도 초과분 생략`)
+      break
+    }
     let href = binmap.get(ref)
     if (!href) {
       const cand = zip.file(new RegExp(`BinData/.*${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"))[0]
@@ -775,6 +813,11 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
       warnings.push(`이미지 ${href} ${(bytes.length / 1048576).toFixed(1)}MB — 한도 초과로 생략`)
       continue
     }
+    if (totalImgBytes + bytes.length > MAX_TOTAL_IMAGE_BYTES) {
+      warnings.push(`이미지 누적 ${Math.round(MAX_TOTAL_IMAGE_BYTES / 1048576)}MB 한도 초과 — 이후 생략`)
+      break
+    }
+    totalImgBytes += bytes.length
     images.set(ref, { dataUri: `data:${sniffMime(href, bytes)};base64,${Buffer.from(bytes).toString("base64")}` })
   }
 
@@ -827,7 +870,7 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
 
   const ctx: Ctx = {
     pages: Array.from({ length: nPages }, () => []), page: 0,
-    geom: { PW, PH, ML, MT, BODY_W, BODY_H }, styles, images,
+    geom: { PW, PH, ML, MT, BODY_W, BODY_H }, styles, images, defs: [],
     highlights: (options?.highlights ?? []).map(s => s.trim().toLowerCase()).filter(s => s.length > 0),
     warnings, warned: new Set(), stats: { texts: 0, images: 0, tables: 0 },
   }
@@ -851,7 +894,7 @@ export async function renderHwpxToSvg(input: ArrayBuffer | Uint8Array, options?:
 
   // width/height는 pt 단위 명시 — 단위 없는 px로 두면 A4 실물(96dpi 기준)보다 25% 작게 보인다 (v3.10.1)
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${pt(PW)} ${pt(totalH)}" width="${pt(PW)}pt" height="${pt(totalH)}pt" font-family="'HCR Batang','함초롬바탕','Hancom Batang',AppleMyungjo,'Noto Serif CJK KR',serif" xml:space="preserve">\n` +
-    `<defs><clipPath id="pgclip"><rect x="0" y="0" width="${pt(PW)}" height="${pt(pageH)}"/></clipPath></defs>\n` +
+    `<defs><clipPath id="pgclip"><rect x="0" y="0" width="${pt(PW)}" height="${pt(pageH)}"/></clipPath>${ctx.defs.join("")}</defs>\n` +
     `${pagesSvg}\n</svg>`
   return { svg, width: Math.round(PW) / 100, height: Math.round(totalH) / 100, pageCount: nPages, warnings, stats: ctx.stats }
 }

@@ -10,7 +10,10 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { toInt32, solveBoundaries, solveRowHeights } from "../src/render/layout.js"
 import { renderHwpxToSvg } from "../src/render/index.js"
+import { buildPara } from "../src/render/svg-render.js"
 import { markdownToHwpx } from "../src/hwpx/generator.js"
+import { createXmlParser } from "../src/hwpx/parser-shared.js"
+import JSZip from "jszip"
 
 const CORPUS = join(dirname(fileURLToPath(import.meta.url)), "..", "bench", "corpus")
 
@@ -79,6 +82,56 @@ describe("render: 조판 캐시 없는 파일 거부", () => {
       (err: Error) => err.message.includes("조판 캐시"),
     )
   })
+
+  it('본문 텍스트에 "linesegarray" 단어가 있어도 캐시로 오판하지 않는다 (리뷰 #11)', async () => {
+    const hwpx = await markdownToHwpx("본문에 linesegarray 라는 단어가 나오는 문서입니다.")
+    // 캐시 없음으로 정확히 거부돼야 한다 (오판 시 무음 백지 렌더)
+    await assert.rejects(
+      renderHwpxToSvg(hwpx),
+      (err: Error) => err.message.includes("조판 캐시"),
+    )
+    // reflow 옵션으로는 텍스트가 실제로 렌더된다
+    const r = await renderHwpxToSvg(hwpx, { reflow: true })
+    assert.ok(r.svg.includes("linesegarray"), "본문 텍스트가 백지로 생략됨")
+  })
+})
+
+describe("render: 탭 슬롯 (리뷰 #16)", () => {
+  it("hp:tab은 inline 컨트롤 8슬롯 — 1슬롯로 세면 lineseg textpos가 밀린다", () => {
+    const xml = `<hp:p xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" paraPrIDRef="0">` +
+      `<hp:run charPrIDRef="0"><hp:t>a<hp:tab/>b</hp:t></hp:run></hp:p>`
+    const doc = createXmlParser().parseFromString(xml, "text/xml")
+    const m = buildPara(doc.documentElement as unknown as Element)
+    assert.equal(m.chars.length, 10) // a(1) + tab(8) + b(1)
+    assert.equal(m.chars[0].ch, "a")
+    assert.equal(m.chars[9].ch, "b")
+    assert.ok(m.chars.slice(1, 9).every(c => c.ch === ""), "탭 필러 슬롯은 폭 0")
+  })
+})
+
+describe("render: 이미지 dataURI 1회 참조 (리뷰 #10)", () => {
+  it("같은 바이너리 2회 그려도 dataURI는 defs에 1번만, 본문은 <use> 2개", async () => {
+    const base = await markdownToHwpx("이미지 중복 참조 테스트")
+    const zip = await JSZip.loadAsync(base)
+    const secName = Object.keys(zip.files).find(n => /section0\.xml$/.test(n))!
+    let sec = await zip.file(secName)!.async("string")
+    const pic = (id: number) =>
+      `<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">` +
+      `<hp:pic id="${id}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None">` +
+      `<hp:sz width="5000" widthRelTo="ABSOLUTE" height="5000" heightRelTo="ABSOLUTE" protect="0"/>` +
+      `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +
+      `<hp:img binaryItemIDRef="dupimg"/></hp:pic></hp:run></hp:p>`
+    sec = sec.replace(/<\/hs:sec>|<\/hp:sec>/, m => `${pic(9001)}${pic(9002)}${m}`)
+    zip.file(secName, sec)
+    // PNG 매직바이트만 있는 최소 바이너리 — 파일명 휴리스틱(BinData/*dupimg*)으로 매칭
+    zip.file("BinData/dupimg.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    const buf = await zip.generateAsync({ type: "nodebuffer" })
+    const r = await renderHwpxToSvg(new Uint8Array(buf), { reflow: true })
+    const dataUris = (r.svg.match(/data:image/g) ?? []).length
+    const uses = (r.svg.match(/<use href="#bin0"/g) ?? []).length
+    assert.equal(dataUris, 1, `dataURI가 ${dataUris}회 중복 emit됨`)
+    assert.equal(uses, 2, `<use> 참조가 ${uses}개 (기대 2)`)
+  })
 })
 
 describe("render: reflow 표 밀어내기 (셀 콘텐츠 성장)", () => {
@@ -125,7 +178,7 @@ describe("render: 실파일 e2e (corpus 존재 시)", { skip: !existsSync(CORPUS
     if (!existsSync(join(CORPUS, file))) return
     const r = await renderHwpxToSvg(read(file))
     assert.equal(r.stats.images, 2)
-    const xs = [...r.svg.matchAll(/<image x="([\d.]+)"/g)].map(m => parseFloat(m[1]))
+    const xs = [...r.svg.matchAll(/<use href="#bin\d+" x="([\d.]+)"/g)].map(m => parseFloat(m[1]))
     assert.equal(xs.length, 2)
     // 두 사진은 서로 다른 열 셀 — x 간격이 셀 폭(238pt)급으로 벌어져야 함
     assert.ok(Math.abs(xs[0] - xs[1]) > 150, `사진 x 좌표가 같은 셀에 몰림: ${xs}`)

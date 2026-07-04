@@ -429,7 +429,16 @@ function parseTable(
   const rawRows: RawDocxCell[][] = []
   for (const tr of trElements) {
     const row: RawDocxCell[] = []
+    // w:trPr/w:gridBefore — 행 앞에서 건너뛴 그리드 열 수. 안 읽으면 그리드가 왼쪽으로
+    // 밀려 셀이 다른 열에 무음 오배치된다(병합·들여쓴 행에서 흔함).
     let col = 0
+    const trPrEls = getChildElements(tr, "trPr")
+    if (trPrEls.length > 0) {
+      const gridBeforeEls = getChildElements(trPrEls[0], "gridBefore")
+      if (gridBeforeEls.length > 0) {
+        col = parseInt(getAttr(gridBeforeEls[0], "val") ?? "0", 10) || 0
+      }
+    }
     for (const tc of getChildElements(tr, "tc")) {
       let colSpan = 1
       let vMerge: RawDocxCell["vMerge"] = null

@@ -139,6 +139,34 @@ describe("DOCX 파서", () => {
     assert.ok(result.markdown.includes("병합됨"))
   })
 
+  it("테이블 gridBefore — 행 앞 스킵 그리드로 셀이 왼쪽으로 밀리지 않고 올바른 열 배치", async () => {
+    // 자료손상 회귀: w:trPr/w:gridBefore 미처리 시 D가 A열로 무음 오배치되던 버그
+    const buffer = await createDocx(`
+      <w:tbl>
+        <w:tr>
+          <w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc>
+        </w:tr>
+        <w:tr>
+          <w:trPr><w:gridBefore w:val="1"/></w:trPr>
+          <w:tc><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>E</w:t></w:r></w:p></w:tc>
+        </w:tr>
+      </w:tbl>
+    `)
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    const dataRow = result.markdown.split("\n").find(l => l.includes("D") && l.includes("E"))
+    assert.ok(dataRow, `D·E 행을 찾지 못함: ${result.markdown}`)
+    const cells = dataRow.split("|").map(s => s.trim())
+    // "|  | D | E |" → ["", "", "D", "E", ""]. gridBefore=1이라 첫 열은 빔.
+    assert.equal(cells[1], "", `첫 열은 비어야 함(gridBefore=1): ${dataRow}`)
+    assert.equal(cells[2], "D", `D는 둘째 열이어야 함: ${dataRow}`)
+    assert.equal(cells[3], "E", `E는 셋째 열이어야 함: ${dataRow}`)
+  })
+
   it("볼드/이탤릭 스타일 추출", async () => {
     const buffer = await createDocx(`
       <w:p>

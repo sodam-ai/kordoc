@@ -439,7 +439,8 @@ function parseTable(
     if (trPrEls.length > 0) {
       const gridBeforeEls = getChildElements(trPrEls[0], "gridBefore")
       if (gridBeforeEls.length > 0) {
-        col = parseInt(getAttr(gridBeforeEls[0], "val") ?? "0", 10) || 0
+        // 음수 gridBefore(기형 docx) 클램프 — colAddr=-1 로 첫 셀이 무음 탈락하던 것 방지
+        col = Math.max(0, parseInt(getAttr(gridBeforeEls[0], "val") ?? "0", 10) || 0)
       }
     }
     for (const tc of getChildElements(tr, "tc")) {

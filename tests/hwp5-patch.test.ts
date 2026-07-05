@@ -805,3 +805,30 @@ describe("patchHwp — 본문 문단 다중줄 (<br> 규약, §4b)", () => {
     assert.ok(re.includes("가나\n다라 수정"), `반영: ${re}`)
   })
 })
+
+describe("다중줄 <br> 표기 회귀 (hwp5-1/2/4)", () => {
+  it("hwp5-1: 내용 동일 표기 변경(\\n→<br>)은 no-op — 문단 재기록·서식 파괴 방지", async () => {
+    const hwp = buildHwp([paragraph("가나\n다라")])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    const edited = md.replace("가나\n다라", "가나<br>다라") // 표기만, 내용 동일
+    const r = await patchHwp(hwp, edited)
+    assert.equal(r.applied, 0, "내용 동일 표기 변경은 적용하지 않아야(no-op)")
+    assert.deepEqual(new Uint8Array(r.data ?? hwp), hwp, "바이트 불변")
+  })
+  it("hwp5-2: 다중줄 <br> 패치 성공 시 verification 잔차가 없다", async () => {
+    const hwp = buildHwp([paragraph("주소")])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    const r = await patchHwp(hwp, md.replace("주소", "서울시 광진구<br>아차산로 123"))
+    assert.equal(r.applied, 1)
+    assert.equal(r.verification?.stats.modified, 0, "완전 적용인데 modified 잔차가 나오면 안 됨")
+  })
+  it("hwp5-4: <br><br> 는 문단 분열 없이 단일 줄바꿈으로 기록", async () => {
+    const hwp = buildHwp([paragraph("값")])
+    const md = parseHwp5Document(Buffer.from(hwp)).markdown
+    const r = await patchHwp(hwp, md.replace("값", "첫줄<br><br>셋째줄"))
+    assert.equal(r.applied, 1)
+    const re = parseHwp5Document(Buffer.from(r.data!)).markdown
+    assert.doesNotMatch(re, /첫줄\n\n셋째줄/, "빈 줄로 문단이 분열되면 안 됨")
+    assert.match(re, /첫줄\n셋째줄/, "단일 줄바꿈으로 유지")
+  })
+})

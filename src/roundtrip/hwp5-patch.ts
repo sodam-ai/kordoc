@@ -369,7 +369,10 @@ export async function patchHwp(
   if (options?.verify !== false) {
     try {
       const reparsed = parseHwp5Document(Buffer.from(data))
-      verification = diffUnitLists(splitMarkdownUnits(reparsed.markdown), editedUnits)
+      // 본문 문단은 \n(재파싱 방출)과 <br>(편집)로 강제 줄바꿈 표기 규약이 달라 raw 비교가
+      // 항상 잔차를 낸다 — 표기를 통일해 완전 적용된 패치를 '잔차'로 오보고하지 않게 한다 (hwp5-2)
+      const normBr = (u: MdUnit): MdUnit => ({ ...u, raw: u.raw.replace(/<br\s*\/?\s*>/gi, "\n") })
+      verification = diffUnitLists(splitMarkdownUnits(reparsed.markdown).map(normBr), editedUnits.map(normBr))
     } catch (err) {
       return { success: false, applied, skipped, error: `패치본 재파싱 실패 — 패치 중단: ${msg(err)}` }
     }
@@ -539,7 +542,9 @@ function patchParagraph(
 
   // <br> 명시 줄바꿈 → \n 복원 (셀 규약과 동일). md의 bare 개행은 soft-wrap이라
   // textUnitToPlain이 공백으로 접으므로, 본문 문단의 강제 줄바꿈은 <br>로만 표현·수정한다.
-  const restoreBr = (s: string): string => s.replace(/\s*<br\s*\/?\s*>\s*/gi, "\n")
+  // 연속 <br> 는 단일 \n 으로 접는다 — <br><br>(빈 줄)이 \n\n 으로 기록되면 재파싱 시
+  // 한 문단이 둘로 분열돼 이후 영구 수정불가(fragment)가 되는 것을 방지 (hwp5-4)
+  const restoreBr = (s: string): string => s.replace(/(?:\s*<br\s*\/?\s*>\s*)+/gi, "\n")
   let newPlain = restoreBr(textUnitToPlain(edited.raw, block))
   // 원본이 다중줄인데 새 값에 줄바꿈 표기가 없으면 — soft-wrap 접힘과 줄바꿈 제거 의도를
   // 구분할 수 없어 줄바꿈 위치 보존 불가 (기존 v1 전면 가드의 정밀화)
@@ -572,7 +577,10 @@ function patchParagraph(
     }
   }
 
-  const origPlain = restoreBr(textUnitToPlain(orig.raw, block))
+  // 원본 비교는 block.text(강제 줄바꿈 \n 보존) 기준 — textUnitToPlain 은 \n 을 공백으로
+  // 접어 <br>→\n 복원본과 절대 같아질 수 없어, 표기만 바꾼(\n↔<br>) no-op 편집을 수정으로
+  // 오판하고 문단을 재기록해 중간 서식(CHAR_SHAPE 다중 런)을 파괴했다 (hwp5-1)
+  const origPlain = block.text != null ? block.text : restoreBr(textUnitToPlain(orig.raw, block))
   if (newPlain === origPlain) return skip("텍스트 외 변경(헤딩 레벨/서식)만 감지 — 스타일 변경은 미지원")
   if (sanitizeText(newPlain) !== newPlain) {
     return skip("공백 정규화 불안정 텍스트 — 패치 시 원문 보존 불가로 미지원")

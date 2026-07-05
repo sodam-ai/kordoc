@@ -167,6 +167,27 @@ describe("DOCX 파서", () => {
     assert.equal(cells[3], "E", `E는 셋째 열이어야 함: ${dataRow}`)
   })
 
+  it("hwp5-5: 음수 gridBefore(기형 docx)는 클램프돼 첫 셀이 소실되지 않는다", async () => {
+    // 2fffadd 가 연 신규 경로: gridBefore 음수 → colAddr=-1 → 첫 셀이 무음 탈락하던 회귀
+    const buffer = await createDocx(`
+      <w:tbl>
+        <w:tr>
+          <w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc>
+        </w:tr>
+        <w:tr>
+          <w:trPr><w:gridBefore w:val="-1"/></w:trPr>
+          <w:tc><w:p><w:r><w:t>D</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>E</w:t></w:r></w:p></w:tc>
+        </w:tr>
+      </w:tbl>
+    `)
+    const result = await parse(buffer)
+    assert.equal(result.success, true)
+    if (!result.success) return
+    assert.match(result.markdown, /D/, "음수 gridBefore 여도 첫 셀 D 가 보존돼야 함(col 0 클램프)")
+  })
+
   it("볼드/이탤릭 스타일 추출", async () => {
     const buffer = await createDocx(`
       <w:p>

@@ -92,10 +92,11 @@ function measureMm(text: string, emMm: number): number {
   return w
 }
 
-/** 문단이 속한 셀 (앵커 문단 → 셀 폭/정렬 이동 계산용) */
+/** 문단이 속한 셀·표 (앵커 문단 → 셀 폭·좌측 오프셋·정렬 이동 계산용) */
 interface ParaSite {
   para: ScanParagraph
   cell?: ScanCell
+  table?: ScanTable
 }
 
 /** 섹션의 본문+셀+글상자 문단을 문서 순서로 평탄화 (머리말·각주 등 excluded 제외) */
@@ -107,7 +108,7 @@ function collectSites(scan: SectionScan): ParaSite[] {
     for (const t of tables) {
       for (const row of t.rows) {
         for (const cell of row) {
-          for (const p of cell.paragraphs) sites.push({ para: p, cell })
+          for (const p of cell.paragraphs) sites.push({ para: p, cell, table: t })
           walkTables(cell.tables, depth + 1)
         }
       }
@@ -151,21 +152,60 @@ function anchorRunInfo(
   return { charPr, prefix, insertAt: close + `</${prefix}:run>`.length }
 }
 
-/** 셀의 콘텐츠 폭(mm) — 문단 앞쪽에서 가장 가까운 <hp:cellSz>/<hp:cellMargin> */
-function cellContentWidthMm(xml: string, cell: ScanCell): number | null {
+/** 셀 <hp:tc> 안의 cellAddr 근접 창 — cellSz/cellMargin 은 cellAddr 의 형제
+ *  (한컴 저장본: addr→span→sz→margin→subList, kordoc 생성본: subList→addr→span→sz→margin) */
+function cellAddrWindow(xml: string, cell: ScanCell): string | null {
+  if (!cell.addrTagRange) return null
+  return xml.slice(cell.addrTagRange.end, cell.addrTagRange.end + 400)
+}
+
+/** 셀의 cellSz 폭(hwpunit) */
+function cellSzWidthHu(xml: string, cell: ScanCell): number | null {
+  const win = cellAddrWindow(xml, cell)
+  if (win) {
+    const m = win.match(/<[A-Za-z0-9]+:cellSz\b[^>]*\bwidth="(\d+)"/)
+    if (m) return Number(m[1])
+  }
+  // 폴백: 첫 문단 앞 역탐색 (addrTagRange 없는 변형 — 한컴 저장본 배치에서 유효)
   const firstPara = cell.paragraphs[0]
   if (!firstPara) return null
   const upto = xml.slice(0, firstPara.start)
   const szMatch = [...upto.matchAll(/<[A-Za-z0-9]+:cellSz\b[^>]*\bwidth="(\d+)"[^>]*>/g)].pop()
-  if (!szMatch) return null
-  let width = Number(szMatch[1])
-  const mgMatch = [...upto.matchAll(/<[A-Za-z0-9]+:cellMargin\b[^>]*>/g)].pop()
-  if (mgMatch && mgMatch.index !== undefined && szMatch.index !== undefined && mgMatch.index > szMatch.index) {
-    const left = Number(attrOf(mgMatch[0], "left") ?? 0)
-    const right = Number(attrOf(mgMatch[0], "right") ?? 0)
-    width -= left + right
+  return szMatch ? Number(szMatch[1]) : null
+}
+
+/** 셀의 콘텐츠 폭(mm) — cellSz − cellMargin 좌우 */
+function cellContentWidthMm(xml: string, cell: ScanCell): number | null {
+  const width = cellSzWidthHu(xml, cell)
+  if (width === null) return null
+  let content = width
+  const win = cellAddrWindow(xml, cell)
+  const mg = win?.match(/<[A-Za-z0-9]+:cellMargin\b[^>]*>/)
+  if (mg) {
+    content -= Number(attrOf(mg[0], "left") ?? 0) + Number(attrOf(mg[0], "right") ?? 0)
   }
-  return width > 0 ? width / HU_PER_MM : null
+  return content > 0 ? content / HU_PER_MM : null
+}
+
+/**
+ * 앵커 셀의 표 내 좌측 오프셋(mm) — 같은 행에서 colAddr 이 앞서는 셀들의 cellSz 폭 합.
+ *
+ * 한컴은 셀 문단에 anchor 된 front 부유(flowWithText=0) 개체의 가로 오프셋을
+ * 셀이 아니라 **단(컬럼) 원점**에서 잰다(P1 실측 — PARA/COLUMN 동일). 그래서
+ * 셀 내부 좌표에 셀의 좌측 오프셋을 더해야 화면상 앵커 문구를 따라간다.
+ * 한계: rowSpan 이 얽힌 복잡 그리드·들여쓴 표는 근사가 어긋날 수 있다(dx 로 보정).
+ */
+function cellLeftOffsetMm(xml: string, table: ScanTable, cell: ScanCell): number {
+  if (cell.colAddr === undefined) return 0
+  const row = table.rows.find(r => r.includes(cell))
+  if (!row) return 0
+  let sum = 0
+  for (const c of row) {
+    if (c === cell || c.colAddr === undefined || c.colAddr >= cell.colAddr) continue
+    const w = cellSzWidthHu(xml, c)
+    if (w) sum += w
+  }
+  return sum / HU_PER_MM
 }
 
 /** 본문 단 폭(mm) — secPr pagePr(용지 − 좌우 여백), 실패 시 150mm */
@@ -352,9 +392,11 @@ export async function placeSealHwpx(hwpxBuffer: ArrayBuffer, ops: SealOp[]): Pro
       mode = availMm - (alignShiftMm + startXMm + anchorWMm) >= sizeMm + 2 ? "right" : "overlap"
     }
 
+    // 셀 앵커: 한컴이 front 부유 가로 오프셋을 단 원점에서 재므로 셀 좌측 오프셋 가산
+    const cellShiftMm = site.cell && site.table ? cellLeftOffsetMm(xml, site.table, site.cell) : 0
     const posXMm =
       (mode === "right" ? startXMm + anchorWMm + 2 : startXMm + anchorWMm / 2 - sizeMm / 2) +
-      alignShiftMm + (op.dxMm ?? 0)
+      alignShiftMm + cellShiftMm + (op.dxMm ?? 0)
     // 줄 세로 중앙 — PARA 프레임은 문단 위로 클램프되므로 본문 최상단 줄에선 상단 정렬로 동작
     const posYMm = -(sizeMm - lineHMm) / 2 + (op.dyMm ?? 0)
 

@@ -20,7 +20,7 @@ import { type HwpxTheme, resolveTheme } from "./gen-ids.js"
 import { buildPrvText, parseMarkdownToBlocks } from "./md-runs.js"
 import { generateContainerXml, generateManifest, generateHeaderXml } from "./gen-header.js"
 import { computeGongmunFitPlan, precomputeGongmunList } from "./gen-gongmun-fit.js"
-import { blocksToSectionXml } from "./gen-section.js"
+import { blocksToSectionXml, type ChartPart } from "./gen-section.js"
 
 export { type HwpxTheme } from "./gen-ids.js"
 
@@ -48,14 +48,16 @@ export async function markdownToHwpx(
   const blocks = parseMarkdownToBlocks(markdown)
   const gongmunList = gongmun ? precomputeGongmunList(blocks, gongmun) : null
   const fit = gongmun && gongmunList ? computeGongmunFitPlan(blocks, gongmun, gongmunList) : null
-  const sectionXml = blocksToSectionXml(blocks, theme, gongmun, gongmunList, fit)
+  const chartParts: ChartPart[] = []
+  const sectionXml = blocksToSectionXml(blocks, theme, gongmun, gongmunList, fit, chartParts)
 
   const zip = new JSZip()
   zip.file("mimetype", "application/hwp+zip", { compression: "STORE" })
   zip.file("META-INF/container.xml", generateContainerXml())
-  zip.file("Contents/content.hpf", generateManifest())
+  zip.file("Contents/content.hpf", generateManifest(chartParts))
   zip.file("Contents/header.xml", generateHeaderXml(theme, gongmun, fit?.variants ?? []))
   zip.file("Contents/section0.xml", sectionXml)
+  for (const part of chartParts) zip.file(part.name, part.xml)
   // Preview/ — 한글 프로그램의 일부 버전(특히 macOS)이 존재 여부를 확인함
   zip.file("Preview/PrvText.txt", buildPrvText(blocks))
 

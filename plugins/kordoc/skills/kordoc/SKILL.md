@@ -21,8 +21,8 @@ npx -y kordoc@^3 <command> ...
 
 첫 호출만 패키지 다운로드로 느리고 이후는 캐시. 상시 사용 환경이면 MCP 서버로 붙일 수도 있다
 (`npx -y kordoc@^3 setup` — 대화형 마법사가 Claude Code/Desktop·Cursor 등에 자동 등록).
-MCP 도구 10종: `parse_document`, `parse_table`, `parse_pages`, `parse_metadata`, `parse_form`,
-`fill_form`, `patch_document`, `generate_document`, `compare_documents`, `detect_format`.
+MCP 도구 11종: `parse_document`, `parse_table`, `parse_pages`, `parse_metadata`, `parse_form`,
+`fill_form`, `place_seal`, `patch_document`, `generate_document`, `compare_documents`, `detect_format`.
 
 ## 명령 요약
 
@@ -68,6 +68,20 @@ npx -y kordoc@^3 generate 보고서.md -o 보고서.hwpx --preset 보고서
 - 본문 옵션: `--font gothic`(맑은 고딕) · `--pt <크기>` · `--line-spacing <퍼센트>` ·
   `--plain`(공문서 모드 끄고 범용 변환).
 - stdin 입력은 파일 인자에 `-`.
+- **차트**: ` ```chart ` 펜스가 한컴 네이티브 차트로 생성된다 (막대·선·원·도넛·영역·분산·방사형 20종):
+
+  ~~~
+  ```chart
+  type: column          ← column|bar|line|area|pie|doughnut|scatter|radar (+_stacked)
+  cat: 1분기, 2분기, 3분기
+  size: 120x70          ← mm (선택)
+  colors: #304D68, accent2   ← 계열 색(파이는 조각 색, 선택)
+  예산: 100, 120, 110   ← "이름: 숫자들" 라인 = 데이터 계열
+  집행: 80, 95, 105
+  ```
+  ~~~
+
+  차트 제목은 펜스가 아니라 본문 문단으로 쓴다. 계열이 없으면 일반 코드블록으로 폴백된다.
 - 생성 후 `validate` 로 구조를 확인하고 나서 사용자에게 전달한다.
 
 ### 3) 서식 채우기 (fill)

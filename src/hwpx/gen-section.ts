@@ -15,6 +15,15 @@ import { type MdBlock, generateParagraph, generateRuns } from "./md-runs.js"
 import { type GongmunFitPlan, variantMapper, precomputeGongmunList } from "./gen-gongmun-fit.js"
 import { generateTable, generateHtmlTableXml } from "./gen-table.js"
 import { generateEquationParagraph } from "./equation-generate.js"
+import { parseChartFence, buildChartSpaceXml, buildChartElementXml } from "./chart-gen.js"
+
+/** 생성 중 수집된 차트 파트 — 호출부(generator)가 ZIP·manifest에 등재 */
+export interface ChartPart {
+  /** ZIP 파트 경로 (Chart/chartN.xml) */
+  name: string
+  /** chartSpace XML 전문 */
+  xml: string
+}
 
 // ─── 섹션 속성 (공문서 표준 여백) ────────────────────
 
@@ -62,6 +71,7 @@ export function blocksToSectionXml(
   gongmun: ResolvedGongmun | null,
   gongmunList: Map<number, { marker: string; depth: number }> | null = gongmun ? precomputeGongmunList(blocks, gongmun) : null,
   fit: GongmunFitPlan | null = null,
+  chartParts: ChartPart[] | null = null,
 ): string {
   const paraXmls: string[] = []
   let isFirst = true
@@ -99,6 +109,22 @@ export function blocksToSectionXml(
         break
       }
       case "code_block": {
+        // ```chart 펜스 → 차트 파트 + <hp:chart> (파싱 실패 시 일반 코드블록 폴백)
+        if (chartParts !== null && (block.lang || "").toLowerCase() === "chart") {
+          const fence = parseChartFence(block.text || "")
+          if (fence) {
+            const partName = `Chart/chart${chartParts.length + 1}.xml`
+            chartParts.push({ name: partName, xml: buildChartSpaceXml(fence) })
+            const chartEl = buildChartElementXml(partName, fence.widthHu, fence.heightHu, 9_100_000 + blockIdx)
+            if (isFirst) {
+              const secRun = `<hp:run charPrIDRef="0">${generateSecPr(gongmun)}<hp:t></hp:t></hp:run>`
+              paraXmls.push(`<hp:p paraPrIDRef="0" styleIDRef="0">${secRun}</hp:p>`)
+              isFirst = false
+            }
+            xml = `<hp:p paraPrIDRef="${PARA_NORMAL}" styleIDRef="0"><hp:run charPrIDRef="${CHAR_NORMAL}">${chartEl}</hp:run></hp:p>`
+            break
+          }
+        }
         const codeLines = (block.text || "").split("\n")
         xml = codeLines.map(line => generateParagraph(line || " ", PARA_CODE)).join("\n  ")
         break

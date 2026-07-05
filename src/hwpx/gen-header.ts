@@ -22,12 +22,15 @@ export function generateContainerXml(): string {
 </ocf:container>`
 }
 
-export function generateManifest(): string {
+export function generateManifest(chartParts: Array<{ name: string }> = []): string {
+  const chartItems = chartParts
+    .map((p, i) => `\n    <opf:item id="chart${i + 1}" href="${p.name}" media-type="application/xml"/>`)
+    .join("")
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <opf:package xmlns:opf="${NS_OPF}" xmlns:hpf="${NS_HPF}" xmlns:hh="${NS_HEAD}">
   <opf:manifest>
     <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
-    <opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/>
+    <opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/>${chartItems}
   </opf:manifest>
   <opf:spine>
     <opf:itemref idref="header" linear="no"/>

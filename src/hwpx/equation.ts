@@ -261,8 +261,8 @@ function maskLiteralSpans(eqString: string): string {
 function findKeywordToken(eqString: string, word: string, from = 0): number {
   const masked = maskLiteralSpans(eqString)
   for (let i = masked.indexOf(word, from); i !== -1; i = masked.indexOf(word, i + 1)) {
-    const okL = i === 0 || masked[i - 1] === " "
-    const okR = i + word.length === masked.length || masked[i + word.length] === " "
+    const okL = i === 0 || /\s/.test(masked[i - 1])
+    const okR = i + word.length === masked.length || /\s/.test(masked[i + word.length])
     if (okL && okR) return i
   }
   return -1
@@ -275,11 +275,24 @@ function replaceFrac(eqString: string): string {
     const cursor = findKeywordToken(eqString, hmlFrac)
     if (cursor === -1) break
     try {
-      const [numStart, numEnd] = findBrackets(eqString, cursor, 0)
-      const numerator = eqString.slice(numStart, numEnd)
+      // 분자는 over 바로 앞(공백 스킵)의 인접 토큰 — 왼쪽 가장 가까운 } 그룹을 잡아
+      // 그 사이 콘텐츠를 무음 삭제하던 것 방지 (sqrt {x} + 1 over 2 에서 " + 1 " 증발)
+      let end = cursor
+      while (end > 0 && eqString[end - 1] === " ") end--
+      let numStart: number, numEnd: number, wrapped: string
+      if (end > 0 && eqString[end - 1] === "}") {
+        [numStart, numEnd] = findBrackets(eqString, end - 1, 0)
+        wrapped = eqString.slice(numStart, numEnd)
+      } else {
+        numEnd = end
+        numStart = end
+        while (numStart > 0 && eqString[numStart - 1] !== " ") numStart--
+        if (numStart === numEnd) throw new Error("empty numerator")
+        wrapped = "{" + eqString.slice(numStart, numEnd) + "}"
+      }
       const beforeFrac = eqString.slice(0, numStart)
       const afterFrac = eqString.slice(cursor + hmlFrac.length)
-      eqString = beforeFrac + "\\frac" + numerator + afterFrac
+      eqString = beforeFrac + "\\frac" + wrapped + afterFrac
     } catch {
       return eqString
     }

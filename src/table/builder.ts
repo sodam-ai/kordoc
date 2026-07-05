@@ -143,10 +143,17 @@ export function convertTableToText(rows: CellContext[][]): string {
 
 /** 마크다운 GFM 특수문자 이스케이프 — remark-gfm 오해석 방지 */
 function escapeGfm(text: string): string {
-  // ~ → \~ (GFM strikethrough 방지)
-  // * → \* (emphasis/HR 방지 — 개인정보 마스킹 별표 런 "******"이 md 수평선/볼드로
-  //   소비되는 것을 차단. 2026-07-03, markdown-units.ts escapeGfm과 동일 유지)
-  return text.replace(/([~*])/g, "\\$1")
+  // ~ → \~ (GFM strikethrough 방지), * → \* (emphasis/HR·마스킹 별표 "******" 방지).
+  // 단 $...$ / $$...$$ 수식 스팬은 KaTeX 문법이라 이스케이프하면 파스 에러가 나므로 보호한다
+  // (스팬을 임시 필러로 가린 뒤 escape → 복원). NUL 필러는 마크다운 본문에 등장하지 않는다.
+  const NUL = String.fromCharCode(0) // 마크다운 본문에 없는 안전한 필러 (소스에 raw NUL 미기입)
+  const spans: string[] = []
+  const masked = text.replace(/\$\$[^$]*\$\$|\$[^$\n]*\$/g, (m) => {
+    spans.push(m)
+    return NUL + (spans.length - 1) + NUL
+  })
+  const escaped = masked.replace(/([~*])/g, "\\$1")
+  return escaped.replace(new RegExp(NUL + "(\\d+)" + NUL, "g"), (_, n) => spans[Number(n)])
 }
 
 /** HWP 자동생성 도형/개체 대체텍스트 정규식 — 한컴오피스가 삽입하는 모든 알려진 패턴 */
@@ -293,16 +300,16 @@ export function blocksToMarkdown(blocks: IRBlock[]): string {
       if (/^\[별표\s*\d+/.test(text)) {
         const nextBlock = blocks[i + 1]
         if (nextBlock?.type === "paragraph" && nextBlock.text && /관련\)?$/.test(nextBlock.text)) {
-          lines.push("", `## ${text} ${nextBlock.text}`, "")
+          lines.push("", `## ${escapeGfm(text)} ${escapeGfm(nextBlock.text)}`, "")
           i++
         } else {
-          lines.push("", `## ${text}`, "")
+          lines.push("", `## ${escapeGfm(text)}`, "")
         }
         continue
       }
 
       if (/^\([^)]*조[^)]*관련\)$/.test(text)) {
-        lines.push(`*${text}*`, "")
+        lines.push(`*${escapeGfm(text)}*`, "")
         continue
       }
 

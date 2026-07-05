@@ -563,7 +563,8 @@ program
       let req: { id?: number; cmd?: string; file?: string; out?: string; reflow?: boolean; reflowMode?: string; highlight?: string[] }
       // 비JSON 라인도 응답은 낸다 — 무음 삼킴이면 id 대기 클라이언트가 영구 행
       try { req = JSON.parse(t) } catch { write({ ok: false, error: "잘못된 JSON 라인" }); continue }
-      if (req.cmd === "quit") break
+      if (req === null || typeof req !== "object") { write({ ok: false, error: "JSON 객체가 아닙니다" }); continue }
+      if (req.cmd === "quit") { rl.close(); break }
       const id = req.id
       try {
         if (!req.file || !req.out) throw new Error("file·out 필수")

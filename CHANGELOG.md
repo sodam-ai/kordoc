@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.0] - 2026-07-06
+
+### Added
+- **렌더 per-run 폰트**: charPr fontRef(hangul) → head.xml fontfaces 글꼴명 → CSS font-family 스택을 `<text>`에 방출. 전 텍스트가 root 함초롬바탕(serif)으로 렌더돼 고딕 공문 제목이 바탕체로 나오던 것 해소.
+- **다구역(multi-section) 렌더**: `renderHwpxToSvg`가 section0만 렌더하던 것을 전 구역 세로 스택으로 확장 — 표지+본문 다구역 문서가 첫 구역만 보이던 것이 전체 페이지로.
+- **겹침 감지 도구**: `bench/reflow-overlap-check.mjs` — SVG 텍스트 bbox 쌍별 교차 검사로 결재란 등 중첩표 조판 회귀를 수치화.
+
+### Fixed
+- **결재란(전자결재 스탬프) 표 겹침(reflow)**: 실텍스트 0(인라인 개체만) 문단의 합성 lineseg textpos가 `chars.length`로 폴백돼 planLines의 plan.start가 개체 index를 넘고, advanceTo 가로 전진에서 개체가 전부 배제 — 라벨표·스탬프표가 같은 x에 포개 찍히던 것을 textpos 0으로 수정해 한컴과 동일하게 나란히 배치. 재현 fixture overlap-check 2쌍→0쌍, 코퍼스 75건 스윕 악화 0.
+- **중첩표 셀 높이 과소측정**: `cellContentExtent`가 인라인 개체(중첩표·treatAsChar 이미지)를 건너뛰어 표지 중첩표 텍스트가 겹치고 페이지 밖으로 넘치던 것 — 인라인 개체 높이(중첩표는 measureTableHeight) 반영.
+- **가로(landscape) 문서 잘림**: pagePr `landscape="NARROWLY"`(90° 회전)를 무시해 가로 표가 세로 프레임 우측에서 잘리던 것 — 용지 W/H 스왑 (HWPX는 가로 문서도 용지 치수를 세로값으로 저장).
+- **연속 표 문단 페이지 포개짐**: 페이지 전체가 표 하나인 문단이 연속이면 분할 프리패스(vertpos strict 역행 기준)가 경계를 못 잡아 뒤 페이지들이 한 페이지에 겹쳐 그려지던 것 — 문단 첫 seg + v 동일 + h 비전진일 때 경계 추가 인정 (같은 줄이 개체 좌우로 갈라진 seg는 오탐 제외).
+
 ## [3.16.2] - 2026-07-05
 
 ### Fixed

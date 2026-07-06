@@ -61,13 +61,18 @@ Beyond plain text extraction, kordoc automates the **entire lifecycle of Korean 
 *   **🔍 Automatic redline (diff)**: Compare two documents and see exactly what changed — including cross-format comparison (HWP vs HWPX).
 *   **📝 Markdown back to HWPX**: Turn AI-written content back into report-form `HWPX`. No more copy-paste drudgery.
 *   **🔄 Lossless format-preserving roundtrip (v3.0)**: Edit the converted markdown and hand it to `patchHwpx` (HWPX) / `patchHwp` (HWP 5.x binary) — only the changed paragraph/cell text is swapped in place, **without touching a single byte of the original formatting**. Row insertion/deletion inherits neighboring-row formatting (v3.7); filling originally-empty HWP 5.x cells works too (v3.8).
-*   **🖼️ Layout-preserving render (v3.10–3.15)**: Reproduce the original layout as SVG from Hancom's saved typesetting cache; files without a cache (AI-generated HWPX, edited output) are typeset directly by a **pure-TS reflow engine**. Multi-page, tables, drawing shapes, search-term highlighting — HWPX previews on a server with no Hancom installed.
+*   **🖼️ Layout-preserving render (v3.10–3.17)**: Reproduce the original layout as SVG from Hancom's saved typesetting cache; files without a cache (AI-generated HWPX, edited output) are typeset directly by a **pure-TS reflow engine**. Multi-page, multi-section, per-run fonts, landscape pages, tables, drawing shapes, search-term highlighting — HWPX previews on a server with no Hancom installed.
 *   **📊 Chart generation (v3.16)**: A markdown ```chart fence (type/cat/series lines) becomes a native Hancom chart (OOXML chartSpace) — 20 types including bar/line/pie/donut/area/scatter/radar, with per-series colors.
 *   **🔴 Stamp/signature placement (v3.16)**: Finds anchor phrases like "(인)" ("seal here") and places a stamp PNG as a floating object in front of text. Tables and pages never grow, so stamping doesn't shift the layout (`kordoc seal`).
 *   **✏️ Form auto-fill**: Feed values into official form templates (applications, reports) and every blank is filled — preserving 100% of the original formatting (font, size, alignment).
 *   **🤖 AI agent integration (MCP)**: Let `Claude`, `Cursor`, and friends call `kordoc` directly to read and produce documents.
 
 ---
+
+## What's New in v3.17.0
+
+- **🖼️ Render fidelity**: per-run fonts (gothic titles no longer fall back to the serif root font), full multi-section rendering (cover + body documents render every section), landscape page rotation (wide tables no longer clipped at the right edge), and page splitting for back-to-back full-page table paragraphs (trailing pages no longer pile onto one page).
+- **✍️ Approval-box overlap fixed (reflow)**: In cache-less documents, the approval box's label table and stamp table were printed on top of each other — now placed side by side exactly like Hancom. Nested-table cell heights are measured correctly as well.
 
 ## What's New in v3.16
 

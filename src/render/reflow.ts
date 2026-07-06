@@ -125,7 +125,10 @@ function reflowPara(
   const lsa = doc.createElement("hp:linesegarray")
   for (let li = 0; li < wrap.starts.length; li++) {
     const startReal = wrap.starts[li]
-    const textpos = startReal < realIdx.length ? realIdx[startReal] : m.chars.length
+    // 실텍스트 없는 문단(인라인 표·개체만)의 textpos는 0 — chars.length로 폴백하면
+    // planLines의 plan.start가 개체 index보다 커져 advanceTo 가로 전진에서 개체가
+    // 전부 빠지고 같은 x에 겹쳐 그려진다 (공문 결재란 라벨표∩스탬프표 겹침의 원인)
+    const textpos = startReal < realIdx.length ? realIdx[startReal] : 0
     const vertpos = startV + li * pitch
     const isFirst = li === 0
     const seg = doc.createElement("hp:lineseg")

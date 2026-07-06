@@ -1,10 +1,37 @@
 # next-session: 결재란(전자결재 스탬프) 텍스트 겹침 수정 — 조사 핸드오프
 
-**상태**: 재현·진단 완료, **수정 미착수**(회귀 위험 + 시각오라클 macOS 전용이라 회사/Mac에서 이어감)
+**상태**: ✅ **수정 완료** (2026-07-06 집/Windows) — 루트코즈는 §5 가설 A/B/C가 아니라 **reflow lineseg textpos 폴백 버그**였음(§10). Mac 잔여: `bench:visual` + `bench:gate`(corpus) 무회귀 확인만.
 **작성**: 2026-07-06 · **분류**: reflow 다중 중첩표 geometry 버그 (저우선이었으나 사용자 요청으로 격상)
 
 > ⚠️ 회귀 정석 검증(`bench:visual` 한컴 시각오라클)은 **macOS+한컴 GUI 전용**. Windows에선 완전보증 불가 →
-> **이 수정은 Mac에서 오라클 돌리며 진행할 것.** Windows에선 아래 Edge/overlap-check로 부분검증만 가능.
+> Windows에서 Edge/overlap-check/785테스트/스팟체크까지 완료. **Mac에선 오라클+corpus 게이트만 돌리면 됨.**
+
+---
+
+## 10. ✅ 실제 루트코즈와 수정 (2026-07-06, 집 PC)
+
+**가설 A/B/C 전부 아님.** 한컴 정답은 세로 스택이 아니라 **한 줄 나란히 배치**다 —
+표1 폭(15808) + 표2 폭(31416) < 표0 셀폭(49043)이라 treatAsChar 개체 둘이 같은 줄에 흐른다.
+가로 전진 로직(`svg-render.ts advanceTo`)은 이미 있었고, 문제는 입력이었다:
+
+- **버그**: `reflow.ts reflowPara` — 실텍스트 0인 문단(인라인 표만)의 합성 lineseg `textpos`가
+  `m.chars.length`(=16)로 폴백 → `planLines`의 `plan.start=16` > 개체 index(0, 8) →
+  `advanceTo`에서 개체가 전부 배제 → 가로 전진 0 → **두 표가 같은 x에 겹침** (수정 전 x1=x2=58.11 실측).
+- **수정**: textpos 폴백을 `0`으로 (reflow.ts 1줄 + 주석). A안(objBottom 누적 스택)을 택했다면
+  나란히 배치가 세로로 찢어져 **오답**이었을 것.
+- **회귀 테스트**: `tests/render.test.ts` "reflow 인라인 표 나란히 배치 (결재란 겹침)" —
+  한 문단 인라인 표 2개 합성 → x 전진 단언. 레드(수정 전 실패) → 그린 확인.
+
+**검증 완료(Windows)**:
+- 재현 fixture(원본 지역아동센터계획.hwpx는 회사 PC에만 있어, 동일 시그니처의
+  `(서울시)2026년 자치구 축제 지원 및 육성사업 추진계획.hwpx`로 재현): overlap-check **2쌍 → 0쌍**
+- Edge headless 육안: 라벨표 좌 + 스탬프표 우(주무관→축제진흥팀장→과장→본부장) 정상 배치
+- `npm test` 785/785 통과
+- 스팟체크 4건(reflow 경로 실문서) 전면 겹침쌍 **감소**(39→38, 319→307, 10434→10066, 11496→11355), 악화 0
+- 실텍스트만 있는 문서 2건은 SVG **byte-identical** (수정 영향 범위가 빈 문단에 국한됨을 확인)
+
+**Mac 잔여**: `npm run bench:visual` + `npm run bench:gate`(corpus 필요 — 집 PC엔 없음),
+원본 fixture(지역아동센터계획.hwpx)로 overlap-check 0쌍 재확인.
 
 ---
 

@@ -21,6 +21,7 @@ program
   .option("--no-header-footer", "PDF 머리글/바닥글 자동 제거")
   .option("--formula-ocr", "PDF 수식 OCR 활성화 (MFD+MFR ONNX, 첫 사용 시 모델 ~155MB 자동 다운로드)")
   .option("--dedupe-headers", "HWP5 레이아웃 표 페이지 반복 러닝 헤더 중복 제거 (기본 off — 붙임별 재번호 오삭제 주의)")
+  .option("--inline-images", "이미지를 base64 data URI 로 마크다운에 인라인 (BMP→PNG 압축, 별도 파일 미저장)")
   .option("--silent", "진행 메시지 숨기기")
   .action(async (files: string[], opts) => {
     const validFormats = ["markdown", "json"]
@@ -54,6 +55,7 @@ program
         if (opts.headerFooter === false) parseOptions.removeHeaderFooter = false
         if (opts.formulaOcr) parseOptions.formulaOcr = true
         if (opts.dedupeHeaders) parseOptions.dedupeRunningHeaders = true
+        if (opts.inlineImages) parseOptions.inlineImages = true
         if (!opts.silent) {
           parseOptions.onProgress = (current: number, total: number) => {
             process.stderr.write(`\r[kordoc] ${filePrefix}${fileName} (${format}) [${current}/${total}]`)
@@ -71,8 +73,12 @@ program
         if (!opts.silent) process.stderr.write(` OK\n`)
 
         let markdown = result.markdown
-        // --out-dir 시 이미지 참조 경로에 images/ 접두사 추가
-        if (opts.outDir && result.images?.length) {
+        // 이미지 인라인은 HWP5 경로에서만 실제로 일어난다(parser.ts). 그 외 포맷(HWPX/DOCX 등)은
+        // --inline-images 를 줘도 인라인되지 않으므로, 이미지 저장/경로접두사를 생략하면 참조가
+        // 깨지고(dangling) 바이트가 유실된다 → 실제 인라인된 경우에만 생략한다.
+        const imagesInlined = opts.inlineImages && result.fileType === "hwp"
+        // --out-dir 시 이미지 참조 경로에 images/ 접두사 추가 (인라인 모드에선 이미지가 마크다운에 임베드되므로 건너뜀)
+        if (opts.outDir && result.images?.length && !imagesInlined) {
           markdown = markdown.replace(/!\[image\]\(image_/g, "![image](images/image_")
         }
         const output = opts.format === "json"
@@ -81,9 +87,9 @@ program
             , 2)
           : markdown
 
-        // 이미지 저장 (--out-dir 또는 --output 시)
+        // 이미지 저장 (--out-dir 또는 --output 시) — 실제 인라인된 경우(HWP5)에만 미저장, 그 외엔 저장 유지
         const saveImages = (dir: string) => {
-          if (!result.images?.length) return
+          if (!result.images?.length || imagesInlined) return
           const imgDir = resolve(dir, "images")
           mkdirSync(imgDir, { recursive: true })
           for (const img of result.images) {

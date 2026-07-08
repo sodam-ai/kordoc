@@ -10,6 +10,7 @@ import {
 } from "./record.js"
 import { NumberingState, expandNumberingFormat, formatNumber, shapeFormatToNumFmt } from "./numbering.js"
 import { extractHwp5Images, extractHwp5ImagesLenient } from "./images.js"
+import { inlineImagesIntoMarkdown } from "../image/transcode.js"
 import { decryptViewText } from "./crypto.js"
 import { hwpEquationToLatex } from "./equation.js"
 import { parseLenientCfb, type LenientCfbContainer } from "./cfb-lenient.js"
@@ -205,7 +206,17 @@ export function parseHwp5Document(buffer: Buffer, options?: ParseOptions): Inter
     .filter(b => b.type === "heading" && b.level && b.text)
     .map(b => ({ level: b.level!, text: b.text!, pageNumber: b.pageNumber }))
 
-  const markdown = blocksToMarkdown(flatBlocks)
+  let markdown = blocksToMarkdown(flatBlocks)
+  // 이미지 인라인 옵션 — BMP→PNG 압축 후 base64 data URI 로 치환 (AI 에이전트 자체 완결형 마크다운)
+  if (options?.inlineImages && images.length > 0) {
+    try {
+      markdown = inlineImagesIntoMarkdown(markdown, images, { compress: true })
+    } catch (inlineErr) {
+      // 설계 계약상 bmpToPng 는 실패 시 null 을 반환하지만, 극단 입력·Node 버전차로 할당이
+      // throw 하면 전체 파싱이 죽지 않도록 원본(비인라인) 마크다운을 유지하고 경고만 남긴다.
+      warnings.push({ message: `이미지 인라인 실패 — 원본 파일 참조로 폴백: ${inlineErr instanceof Error ? inlineErr.message : "알 수 없는 오류"}`, code: "SKIPPED_IMAGE" })
+    }
+  }
   return { markdown, blocks: flatBlocks, metadata, outline: outline.length > 0 ? outline : undefined, warnings: warnings.length > 0 ? warnings : undefined, images: images.length > 0 ? images : undefined }
 }
 

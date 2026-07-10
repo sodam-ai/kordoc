@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "fs"
 import { basename, dirname, resolve, extname } from "path"
 import { Command } from "commander"
-import { parse, detectFormat, detectZipFormat, fillFormFields, extractFormFields, blocksToMarkdown, markdownToHwpx, fillHwpx, PRESET_ALIAS } from "./index.js"
+import { parse, detectFormat, detectZipFormat, fillFormFields, extractFormFields, blocksToMarkdown, markdownToHwpx, fillHwpx, PRESET_ALIAS, unknownFontWarnings } from "./index.js"
 import type { ParseOptions } from "./types.js"
 import { VERSION, toArrayBuffer, sanitizeError } from "./utils.js"
 
@@ -466,10 +466,24 @@ program
   .alias("gen")
   .description("마크다운 → 공문서 HWPX 생성 — kordoc generate 보고서.md -o 보고서.hwpx --preset 보고서 (markdown에 '-' 지정 시 stdin)")
   .option("-o, --output <path>", "출력 HWPX 경로 (기본: <입력>.hwpx)")
-  .option("--preset <name>", "공문서 프리셋: 기안문(official)·보고서(report)·계획서(plan)·통지(notice)·회의록(minutes)", "기안문")
+  .option("--preset <name>", "공문서 프리셋: 기안문(official)·보고서(report)·계획서(plan)·통지(notice)·회의록(minutes)·개조식(gaejosik — 표지·목차·장헤더 자동)", "기안문")
   .option("--font <type>", "본문 글꼴: myeongjo(함초롬바탕) 또는 gothic(맑은 고딕)")
   .option("--pt <size>", "본문 글자 크기(pt)")
   .option("--line-spacing <percent>", "본문 줄간격(%)")
+  .option("--org <name>", "표지 기관명 (개조식 프리셋)")
+  .option("--date <date>", "표지 날짜 (개조식 프리셋, 기본 오늘 — 'YYYY. M. D.')")
+  .option("--toc", "목차 페이지 강제 켜기 (개조식 외 프리셋에서도 h2 목록으로 생성)")
+  .option("--no-toc", "목차 페이지 끄기 (개조식 프리셋 기본 켜짐)")
+  .option("--cover", "표지 페이지 강제 켜기 (개조식 외 프리셋에서도 첫 h1을 표지로)")
+  .option("--no-cover", "표지 페이지 끄기 (개조식 프리셋 기본 켜짐)")
+  .option("--approval <labels>", "결재란 직위 라벨 (쉼표 구분, 예: 담당,팀장,과장) — 문서 최상단 우측")
+  .option("--page-numbers", "쪽번호 강제 켜기 (하단 중앙 '- 1 -')")
+  .option("--no-page-numbers", "쪽번호 끄기 (개조식·보고서·계획서 기본 켜짐)")
+  .option("--end-mark", "본문 끝 '끝.' 표시 강제 켜기")
+  .option("--no-end-mark", "'끝.' 표시 끄기 (기안문 기본 켜짐)")
+  .option("--no-body-title-box", "본문 첫 페이지 제목 반복 박스 끄기 (개조식+표지 기본 켜짐)")
+  .option("--fonts <spec>", "요소별 글꼴 오버라이드: body=나눔명조,heading=나눔고딕,ref=한양중고딕,table=맑은 고딕")
+  .option("--sizes <spec>", "개조식 요소별 크기(pt): dae=16,cham=13,table=12,coverTitle=30 …")
   .option("--plain", "공문서 모드 끄기 (범용 마크다운 변환)")
   .option("--silent", "진행 메시지 숨기기")
   .action(async (markdown: string, opts) => {
@@ -494,10 +508,25 @@ program
       if (!opts.plain) {
         const preset = PRESET_ALIAS[String(opts.preset).trim()]
         if (!preset) {
-          process.stderr.write(`[kordoc] 알 수 없는 프리셋: ${opts.preset} (기안문/보고서/계획서/통지/회의록)\n`)
+          process.stderr.write(`[kordoc] 알 수 없는 프리셋: ${opts.preset} (기안문/보고서/계획서/통지/회의록/개조식)\n`)
           process.exit(1)
         }
         gongmun = { preset }
+        // 표지: --no-cover가 최우선, org/date 지정 시 객체(=켜짐), --cover는 강제 켜기.
+        // 미지정이면 프리셋 기본(개조식만 켜짐 — resolveGongmun)
+        if (opts.cover === false) {
+          gongmun.cover = false
+        } else if (opts.org || opts.date) {
+          gongmun.cover = { ...(opts.org ? { org: opts.org } : {}), ...(opts.date ? { date: opts.date } : {}) }
+        } else if (opts.cover === true) {
+          gongmun.cover = true
+        }
+        // 목차: --toc/--no-toc 명시 시에만 전달 (미지정이면 프리셋 기본)
+        if (opts.toc !== undefined) gongmun.toc = opts.toc
+        if (opts.approval) gongmun.approval = String(opts.approval).split(",").map((s: string) => s.trim()).filter(Boolean)
+        if (opts.pageNumbers !== undefined) gongmun.pageNumbers = opts.pageNumbers
+        if (opts.endMark !== undefined) gongmun.endMark = opts.endMark
+        if (opts.bodyTitleBox === false) gongmun.bodyTitleBox = false
         if (opts.font) {
           if (opts.font !== "myeongjo" && opts.font !== "gothic") {
             process.stderr.write(`[kordoc] --font 은 myeongjo 또는 gothic\n`)
@@ -507,6 +536,20 @@ program
         }
         if (opts.pt) gongmun.bodyPt = Number(opts.pt)
         if (opts.lineSpacing) gongmun.lineSpacing = Number(opts.lineSpacing)
+        // "key=value,key=value" 스펙 파싱 — 값에 쉼표가 없는 폰트명·숫자만 지원
+        const parseKv = (spec: string): Record<string, string> =>
+          Object.fromEntries(spec.split(",").map((p) => p.split("=").map((s) => s.trim())).filter((kv) => kv.length === 2 && kv[0] && kv[1]))
+        if (opts.fonts) gongmun.fonts = parseKv(String(opts.fonts))
+        if (opts.sizes) {
+          gongmun.sizes = Object.fromEntries(
+            Object.entries(parseKv(String(opts.sizes))).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isFinite(v as number)),
+          )
+        }
+      }
+
+      // 폰트 오버라이드 오타·미설치 경고 (A2) — 생성은 진행
+      if (gongmun?.fonts && !silent) {
+        for (const w of unknownFontWarnings(gongmun.fonts)) process.stderr.write(`[kordoc] ${w}\n`)
       }
 
       const buf = await markdownToHwpx(md, gongmun ? { gongmun } : undefined)

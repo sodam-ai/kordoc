@@ -285,7 +285,10 @@ console.log("여러 줄 문단 글꼴 분포(줄바꿈점 수):", [...byFace.ent
 
 // ─── 옵션 그리드 평가 ───
 // modeOpt 'para'=paraPr 선언대로(keep/break) / 'forceBreak'=전부 글자단위
-// (서울시 전자결재 변환기는 KEEP_WORD 선언을 무시하고 글자단위로 lineseg를 계산함이 실측 확인됨)
+// 주의: breakNonLatinWord 의미는 이름과 반대 — "KEEP_WORD"=글자 단위, "BREAK_WORD"=어절 유지
+// (2026-07 한글 COM 실렌더 A/B 실측). 아래 keepWord 필드는 KEEP_WORD 선언 감지값이라
+// 'para' 모드의 keep 매핑이 실제와 뒤집혀 있다 — 코퍼스가 전부 KEEP_WORD(=글자)라
+// charAll 98% 일치가 나온 것이고, "변환기가 선언을 무시한다"던 과거 해석은 오독이었다.
 for (const modeOpt of ["para", "charAll"]) {
 for (const spaceOpt of [500, 300]) {
   for (const kinsoku of ["none", "push"]) {

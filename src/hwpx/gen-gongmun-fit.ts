@@ -44,6 +44,8 @@ export function computeGongmunFitPlan(
     let contW: number
     if (block.type === "list_item" && gongmunList.has(i)) {
       const { marker, depth } = gongmunList.get(i)!
+      // 개조식 □(16pt)·※(13pt)는 본문 charPr(15pt) 계열이 아니라 변형 제외
+      if (gongmun.numbering === "gaejosik" && (depth === 0 || (block.text || "").trimStart().startsWith("※"))) continue
       const content = plainRenderText(block.text || "")
       text = marker ? `${marker} ${content}` : content
       const { left, indent } = levelIndent(depth, gongmun.bodyHeight, gongmun.numbering)
@@ -53,6 +55,7 @@ export function computeGongmunFitPlan(
     } else if (block.type === "paragraph") {
       const raw = (block.text || "").trim()
       if (/^<center>[\s\S]*<\/center>$/i.test(raw)) continue // 가운데정렬 — 대상 아님
+      if (gongmun.numbering === "gaejosik" && raw.startsWith("※")) continue // ※ 참고(13pt) 제외
       text = plainRenderText(raw)
       firstW = contW = pageW
     } else {
@@ -67,12 +70,13 @@ export function computeGongmunFitPlan(
   return ratioByBlock.size > 0 ? { ratioByBlock, variants } : null
 }
 
-/** fit 계획에 따른 charPr id 매퍼 — 본문 계열(0~3)만 변형으로 치환 */
-export function variantMapper(fit: GongmunFitPlan, blockIdx: number): ((id: number) => number) | undefined {
+/** fit 계획에 따른 charPr id 매퍼 — 본문 계열(0~3)만 변형으로 치환.
+ *  base: 변형 charPr 시작 id (개조식은 전용 charPr 뒤 — gen-ids charVariantBase) */
+export function variantMapper(fit: GongmunFitPlan, blockIdx: number, base: number = CHAR_VARIANT_BASE): ((id: number) => number) | undefined {
   const r = fit.ratioByBlock.get(blockIdx)
   if (r === undefined) return undefined
   const vi = fit.variants.indexOf(r)
-  return (id) => (id >= 0 && id <= 3 ? CHAR_VARIANT_BASE + vi * 4 + id : id)
+  return (id) => (id >= 0 && id <= 3 ? base + vi * 4 + id : id)
 }
 
 /**
@@ -84,6 +88,11 @@ export function precomputeGongmunList(
   gongmun: ResolvedGongmun,
 ): Map<number, { marker: string; depth: number }> {
   const result = new Map<number, { marker: string; depth: number }>()
+  // 개조식 적응 시프트 — h3가 □ 대항목을 차지하는 문서는 리스트가 ○부터 시작
+  const depthOffset =
+    gongmun.numbering === "gaejosik" && blocks.some((b) => b.type === "heading" && b.level === 3)
+      ? 1
+      : 0
   let i = 0
   while (i < blocks.length) {
     if (blocks[i].type !== "list_item") { i++; continue }
@@ -106,7 +115,7 @@ export function precomputeGongmunList(
       }
       break
     }
-    const depths = run.map((bi) => Math.min(Math.max(blocks[bi].indent || 0, 0), GONGMUN_LIST_LEVELS - 1))
+    const depths = run.map((bi) => Math.min(Math.max((blocks[bi].indent || 0) + depthOffset, 0), GONGMUN_LIST_LEVELS - 1))
     // 단일 형제 부호 생략은 법정 번호(standard)에만. 불릿(report)은 항상 표시.
     const suppress = gongmun.numbering === "standard"
       ? computeSuppression(depths)

@@ -59,10 +59,19 @@ export interface ResolvedParaHeading {
 export function resolveParaHeading(paraEl: Element, ctx: WalkCtx): ResolvedParaHeading | null {
   const sm = ctx.styleMap
   if (!sm) return null
+  // 명명 스타일 기반 헤딩 — "개요 N" 스타일 참조 문단은 OUTLINE 없이도 헤딩.
+  // (공문서 생성기가 개요 번호 렌더 결함을 피해 OUTLINE 대신 스타일명으로 의미 보존)
+  const styleId = paraEl.getAttribute("styleIDRef")
+  let styleHeading: number | undefined
+  if (styleId && styleId !== "0") {
+    const st = sm.styles.get(styleId)
+    const m = st && /^개요\s*([1-6])$/.exec(st.name)
+    if (m) styleHeading = Math.min(parseInt(m[1], 10), 6)
+  }
   const prId = paraEl.getAttribute("paraPrIDRef")
-  if (!prId) return null
+  if (!prId) return styleHeading ? { headingLevel: styleHeading } : null
   const ref = sm.paraHeadings.get(prId)
-  if (!ref) return null
+  if (!ref) return styleHeading ? { headingLevel: styleHeading } : null
 
   if (ref.type === "BULLET") {
     const char = sm.bullets.get(ref.idRef)

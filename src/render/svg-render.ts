@@ -37,7 +37,9 @@ export interface RenderSvgOptions {
   /** Tier-2 reflow — 조판 캐시(linesegarray) 없는 파일도 순수 TS 조판으로 렌더.
    *  캐시가 있으면 무시(한컴본은 캐시 재생). 기본 false(캐시 없으면 KordocError). */
   reflow?: boolean
-  /** reflow 줄바꿈 모드 — 'keep'(어절, Windows 한글·공문서) / 'charAll'(글자, macOS·전자결재) */
+  /** reflow 줄바꿈 폴백 모드 — 'keep'(어절) / 'charAll'(글자). 문단 paraPr에
+   *  breakSetting 선언이 있으면 그 값이 우선하며(BREAK_WORD=어절, KEEP_WORD=글자 —
+   *  이름 역전 주의), 이 옵션은 선언 없는 문단에만 적용된다. */
   reflowMode?: WrapMode
 }
 

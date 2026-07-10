@@ -47,6 +47,7 @@ export function charWidthEm1000(cp: number): number {
   if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff)) return 1000 // 한자
   if ((cp >= 0x3008 && cp <= 0x3011) || (cp >= 0x3014 && cp <= 0x301b)) return 500 // 「」『』〈〉《》〔〕【】
   if (cp === 0x3000) return 970 // 전각 공백
+  if (cp >= 0x2160 && cp <= 0x2183) return 970 // 로마숫자 Ⅰ~Ⅻ (한글 글꼴 전각)
   if (cp >= 0x2190 && cp <= 0x22ff) return 970 // 화살표·수학 기호
   if (cp >= 0x2460 && cp <= 0x24ff) return 970 // 원문자 ①⑴
   if (cp >= 0x25a0 && cp <= 0x26ff) return 970 // 도형 □○◆★
@@ -116,8 +117,8 @@ export interface WrapResult {
 
 /**
  * 문단 줄바꿈 시뮬레이션.
- * mode 'keep' = breakNonLatinWord=KEEP_WORD(어절 단위, 공문서 모드·Windows 한글),
- * mode 'charAll' = 글자 단위(BREAK_WORD·macOS 한글·전자결재 변환기의 실동작).
+ * mode 'keep' = 어절 단위(공문서 모드 — 저장 속성 breakNonLatinWord="BREAK_WORD", 이름 역전 주의),
+ * mode 'charAll' = 글자 단위(breakNonLatinWord="KEEP_WORD" — 한글 기본값·전자결재 변환기).
  * 한 어절이 줄보다 길면 keep에서도 글자 단위로 강제 분해(한컴 동일).
  *
  * @param text        문단 전체 텍스트(항목 부호 포함)

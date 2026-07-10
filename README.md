@@ -524,11 +524,27 @@ const withEquation = await markdownToHwpx("피타고라스\n\n$$a^2 + b^2 = c^2$
 
 // 공문서 모드 — 항목부호 8단계 + 내어쓰기 + 공식 여백/명조 자동
 const gongmun = await markdownToHwpx("1. 추진배경\n  - 세부 항목\n2. 추진계획", {
-  gongmun: { preset: "보고서" },  // official | report | plan | notice | minutes
+  gongmun: { preset: "보고서" },  // official | report | plan | notice | minutes | gaejosik
 })
+
+// 정부 표준 개조식 보고서 (v4.0) — 표지·목차(장식 배너)·로마숫자 장헤더·
+// 본문 제목박스·쪽번호("- 1 -", 표지·목차 제외)까지 실측 정부 양식 그대로
+const report = await markdownToHwpx(md, {
+  gongmun: {
+    preset: "개조식",
+    cover: { org: "기관명", date: "2026. 7. 11." },
+    toc: true,                       // h2 목록 → Ⅰ Ⅱ Ⅲ 목차 (개조식 기본 켜짐)
+    approval: ["담당", "팀장", "과장"], // 결재란 (선택)
+    pageNumbers: true,               // 쪽번호 (개조식·보고서·계획서 기본 켜짐)
+    endMark: false,                  // 본문 끝 "끝." (기안문 기본 켜짐)
+  },
+})
+// 표는 실측 정부 문법 자동 적용: 헤더 음영+bold+하변 이중선, 외곽 0.4mm 위계,
+// 라벨열 음영, 내용 비례 열폭(수치 열 실폭 고정), 본문폭보다 좁게 + 우측 배치
 ```
 
-CLI로도: `kordoc generate 보고서.md -o 보고서.hwpx --preset 보고서`
+CLI로도: `kordoc generate 보고서.md -o 보고서.hwpx --preset 개조식 --org 기관명 --approval 담당,팀장,과장`
+(`--toc/--no-toc` `--cover/--no-cover` `--page-numbers` `--end-mark` `--no-body-title-box` `--fonts` `--sizes`)
 
 ### 레이아웃 보존 렌더 (HWPX → SVG)
 

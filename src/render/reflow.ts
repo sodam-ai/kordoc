@@ -114,9 +114,11 @@ function reflowPara(
   const contWidth = Math.max(500, avail + Math.min(0, geom.marginIntent))
   const contHorz = marginL - Math.min(0, geom.marginIntent)
 
+  // 문단 paraPr의 breakSetting이 있으면 그 선언(어절/글자)을 따르고, 없으면 호출자 모드
+  const paraMode = geom.wrapMode ?? mode
   const wrap = text.length === 0
     ? { lines: 1, starts: [0], lastLineWidth: 0 }
-    : simulateWrap(text, firstWidth, contWidth, height, ratio, mode, { spacingPct })
+    : simulateWrap(text, firstWidth, contWidth, height, ratio, paraMode, { spacingPct })
 
   const pitch = pitchFor(height, geom)
   const baseline = Math.round(height * BASELINE_RATIO)

@@ -38,6 +38,10 @@ export interface RenderParaGeom {
   spaceBefore: number
   /** 문단 아래 간격(next) */
   spaceAfter: number
+  /** breakSetting의 한글 줄나눔 — 'keep'(어절)/'charAll'(글자). 없으면 호출자 모드.
+   *  주의: 저장 속성 의미는 이름과 반대 — breakNonLatinWord "BREAK_WORD"=어절,
+   *  "KEEP_WORD"=글자 (한글 COM 실렌더 실측) */
+  wrapMode?: "keep" | "charAll"
 }
 
 export const DEFAULT_PARA_GEOM: RenderParaGeom = {
@@ -211,6 +215,13 @@ function parseParaGeom(el: Element): RenderParaGeom {
     g.marginIntent = v("intent")
     g.spaceBefore = v("prev")
     g.spaceAfter = v("next")
+  }
+  const bs = findDeep(el, "breakSetting")
+  if (bs) {
+    // 속성 의미 역전 주의(위 RenderParaGeom.wrapMode 주석): BREAK_WORD=어절, KEEP_WORD=글자
+    const nl = bs.getAttribute("breakNonLatinWord")
+    if (nl === "BREAK_WORD") g.wrapMode = "keep"
+    else if (nl === "KEEP_WORD") g.wrapMode = "charAll"
   }
   return g
 }

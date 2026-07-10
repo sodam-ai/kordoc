@@ -1,17 +1,62 @@
 /**
  * HWPX 표 XML 생성 (generator.ts에서 분리) — GFM 그리드 표와
  * 병합(colspan/rowspan) HTML 표 경로.
+ *
+ * 열폭은 내용 실폭(text-metrics) 비례 배분 — 균등 1/n 분할 아님.
+ * 공문서 모드는 실측 정부 양식 표 문법(헤더 음영·bold·하변 이중선, 외곽 0.4mm
+ * 위계, 라벨열, 셀 CENTER 130%/LEFT, 축폭+우측 배치)을 적용한다 (style 인자).
+ * 서식 프로필(#41, remap)이 표에 매칭되면 셀 좌표별 실측 서식(bf·charPr·행높이·열폭)이
+ * 최우선 — 프로필 미매칭 셀만 기본/공문서 문법으로 채운다.
  */
 
 import { parseHtmlTable, htmlCellInnerToLines, extractTopLevelTables, type HtmlRowInfo } from "../roundtrip/markdown-units.js"
-import { CHAR_NORMAL, CHAR_TABLE_HEADER, escapeXml, type ResolvedTheme } from "./gen-ids.js"
+import { CHAR_NORMAL, CHAR_BOLD, CHAR_TABLE_HEADER, PARA_NORMAL, escapeXml, type ResolvedTheme } from "./gen-ids.js"
 import { generateRuns } from "./md-runs.js"
+import { measureTextWidth } from "./text-metrics.js"
+import { TableBfRegistry, dataCellSpec } from "./gen-table-bf.js"
 import { takeProfile, normalizeAnchor, type ProfileRemap, type TableRemap } from "./gen-profile.js"
 
 // 기본 셀 크기 (HWPUnit) — A4 기준 적당한 기본값
 const TABLE_ID_BASE = 1000
 let tableIdCounter = TABLE_ID_BASE
 function nextTableId(): number { return ++tableIdCounter }
+
+/** 공문서 표 스타일 — gen-section이 ResolvedGongmun에서 해석해 전달 */
+export interface GongmunTableStyle {
+  /** 표 전체 폭(HWPUNIT) — 본문 폭 맞춤 */
+  totalWidth: number
+  /** 셀 본문 charPr (개조식: 맑은 고딕 12pt) */
+  charPr: number
+  /** 셀 안 강조 charPr */
+  boldCharPr: number
+  /** 폭·행높이 측정용 글자 높이(charPr height) */
+  charHeight: number
+  /** 헤더행 음영 borderFill (#E6E6E6) — bfRegistry 부재 시 폴백 */
+  headerBf: number
+  /** 가운데정렬 paraPr */
+  centerParaPr: number
+  /** 표 셀 전용 paraPr — CENTER 130% (실측 GT1 표⑪). 미지정 시 centerParaPr */
+  tblCenterParaPr?: number
+  /** 표 셀 장문 열 paraPr — LEFT 130%. 미지정 시 PARA_NORMAL */
+  tblLeftParaPr?: number
+  /**
+   * 표 테두리 위계 레지스트리 — 지정 시 실측 문법 적용:
+   * 외곽 0.4mm / 내부 0.12mm / 헤더행 하변 DOUBLE_SLIM 0.5mm / 헤더 bold /
+   * 라벨열 음영 / 축폭(본문폭 −1800) + 호스트 우측정렬 (gap_tables TBL-01~11)
+   */
+  bfRegistry?: TableBfRegistry
+  /** 데이터 표 호스트 문단 paraPr(RIGHT) — bfRegistry와 함께 지정 */
+  rightParaPr?: number
+  /** 헤더행 음영색 (기본 #E6E6E6 — 실측 GT1·샘플양식1) */
+  headerFill?: string
+  /** 라벨열 음영색 (기본 #E7E7E7 — 실측 GT6/GT7 표3) */
+  labelFill?: string
+}
+
+/** 실측 데이터 표 폭 여유 — GT6 46194·GT7 46372·GT11 46544 ≈ 본문폭 −1800 */
+export const DATA_TABLE_INSET = 1800
+
+// ─── 서식 프로필 매칭 헬퍼 (#41) ─────────────────────
 
 /** 마크다운 셀 → 매칭 앵커. 이미지 참조는 원본 XML 텍스트에 없으므로 제거 후 정규화. */
 function anchorOfMarkdownCell(cell: string): string {
@@ -25,52 +70,180 @@ function anchorOfHtmlCell(inner: string): string {
   return normalizeAnchor(lines.join(""))
 }
 
-/** 열 폭 배열 — 프로필 col_widths > width/cols > 기본 total/cols. */
-function resolveColWidths(tp: TableRemap | null, colCnt: number, fallbackTotal: number): number[] {
-  if (tp?.colWidths && tp.colWidths.length === colCnt) return tp.colWidths
-  const w = tp?.width ? Math.floor(tp.width / colCnt) : Math.floor(fallbackTotal / colCnt)
-  return Array(colCnt).fill(w)
+/** 프로필 열폭 — col_widths > width/cols. 없으면 null(호출부가 내용 비례 계산) */
+function profileColWidths(tp: TableRemap | null, colCnt: number): number[] | null {
+  if (!tp) return null
+  if (tp.colWidths && tp.colWidths.length === colCnt) return tp.colWidths
+  if (tp.width) return Array(colCnt).fill(Math.floor(tp.width / colCnt))
+  return null
 }
 
-export function generateTable(rows: string[][], theme: ResolvedTheme, remap: ProfileRemap | null = null, seq = 0): string {
+// ─── 열폭 계산 (내용 비례) ───────────────────────────
+
+/** 셀 좌우 마진(141×2) + 조판 여유 */
+const CELL_PAD = 582
+
+/** 셀 텍스트 실폭 — 인라인 마크다운 부호 제거, <br> 분리 후 최장 줄 기준 */
+function cellContentWidth(text: string, charHeight: number): number {
+  let max = 0
+  for (const seg of text.replace(/\*\*|__|`/g, "").split(/<br\s*\/?>/i)) {
+    const w = measureTextWidth(seg.trim(), charHeight, 100)
+    if (w > max) max = w
+  }
+  return max
+}
+
+/**
+ * 열폭 배분 — 짧은 열은 실폭 고정, 긴 열이 잔여를 내용폭 비례로 가져간다
+ * (실제 공문서 표 관행: 라벨·수치 열은 한 줄에 딱 맞고 서술 열이 넓다).
+ *
+ * 1) 실폭(내용+패딩)이 균등분할분 이하인 열은 실폭으로 확정 — 수치 열이
+ *    긴 서술 열에 밀려 "4,673"이 두 줄로 꺾이는 협착 방지 (실렌더 확인)
+ * 2) 나머지 열은 잔여 폭을 내용폭 비례 배분. 최소폭(전체 6%) 보장·80% 캡.
+ *    확정 열이 각자 균등분할분 이하만 가져가므로 잔여 ≥ 남은 열 수 × 균등분할분
+ *    ≥ 남은 열 수 × minW — 음수 폭 불가 불변식 유지.
+ */
+function computeColWidths(colMax: number[], totalWidth: number): number[] {
+  const colCnt = colMax.length
+  const minW = Math.min(Math.max(2000, Math.round(totalWidth * 0.06)), Math.floor(totalWidth / colCnt))
+  const cap = Math.round(totalWidth * 0.8)
+  const raw = colMax.map((w) => Math.min(Math.max(w + CELL_PAD, minW), cap))
+  const widths = Array<number>(colCnt).fill(0)
+  const free = new Set(raw.map((_, i) => i))
+  let budget = totalWidth
+  // 1) 짧은 열 실폭 확정 — 12% 안전 여유 (측정은 함초롬 기준, 실제 셀 폰트
+  //    맑은 고딕 bold가 더 넓어 "4,673"류 수치가 꺾이는 협착 방지 — 실렌더 확인)
+  const evenShare = Math.floor(totalWidth / colCnt)
+  for (let i = 0; i < colCnt; i++) {
+    const fixed = Math.min(Math.round(raw[i] * 1.12), evenShare)
+    if (raw[i] <= evenShare && free.size > 1) { widths[i] = fixed; free.delete(i); budget -= fixed }
+  }
+  if (free.size === 0) {
+    // 전 열이 짧으면 잔여를 내용폭 비례로 추가 배분 (표 폭 유지)
+    const sumRaw = raw.reduce((a, b) => a + b, 0)
+    for (let i = 0; i < colCnt; i++) widths[i] += Math.floor((raw[i] / sumRaw) * (totalWidth - sumRaw))
+  } else {
+    // 2) 긴 열 비례 배분 (minW 미달 열은 minW 확정 후 재배분)
+    for (;;) {
+      const sum = [...free].reduce((a, i) => a + raw[i], 0)
+      const short = [...free].filter((i) => (raw[i] / sum) * budget < minW)
+      if (short.length === 0) break
+      for (const i of short) { widths[i] = minW; free.delete(i); budget -= minW }
+      if (free.size === 0) break
+    }
+    const sum = [...free].reduce((a, i) => a + raw[i], 0)
+    for (const i of free) widths[i] = Math.floor((raw[i] / sum) * budget)
+  }
+  // 내림 잔여(0 ≤ r < 열 수)는 내용폭 큰 열부터 1씩
+  let rem = totalWidth - widths.reduce((a, b) => a + b, 0)
+  const order = [...raw.keys()].sort((a, b) => raw[b] - raw[a])
+  for (let k = 0; rem > 0; k = (k + 1) % colCnt, rem--) widths[order[k]]++
+  return widths
+}
+
+/** 행 높이 추정 — 각 셀의 줄바꿈 수 시뮬레이션(최다 줄 기준) */
+function estimateRowHeight(cells: string[], widths: number[], charHeight: number): number {
+  let maxLines = 1
+  cells.forEach((cell, c) => {
+    const usable = Math.max((widths[c] ?? widths[widths.length - 1]) - CELL_PAD, 1000)
+    let lines = 0
+    for (const seg of cell.replace(/\*\*|__|`/g, "").split(/<br\s*\/?>/i)) {
+      lines += Math.max(1, Math.ceil(measureTextWidth(seg.trim(), charHeight, 100) / usable))
+    }
+    if (lines > maxLines) maxLines = lines
+  })
+  return maxLines * Math.round(charHeight * 1.6) + 282
+}
+
+// ─── GFM 그리드 표 ──────────────────────────────────
+
+export function generateTable(rows: string[][], theme: ResolvedTheme, style: GongmunTableStyle | null = null, remap: ProfileRemap | null = null, seq = 0): string {
   const rowCnt = rows.length
   const colCnt = Math.max(...rows.map(r => r.length), 1)
-  const cellH = 1500  // 기본 행 높이
+  const reg = style?.bfRegistry ?? null
+  // 실측 모드: 데이터 표는 본문폭보다 좁게 + 호스트 우측정렬 (TBL-09)
+  const totalW = style ? (reg ? style.totalWidth - DATA_TABLE_INSET : style.totalWidth) : 44000
+  const measureH = style?.charHeight ?? 1000
+
+  // 서식 프로필 매칭 (#41) — 매칭되면 셀 좌표별 실측 서식 최우선
+  const prof = takeProfile(remap, rowCnt, colCnt, anchorOfMarkdownCell(rows[0]?.[0] ?? ""), seq)
+
+  // 열별 최대 내용폭 (헤더 포함 / 본문만) → 비례 열폭 + 짧은 열 가운데 정렬 판단
+  const colMax = Array(colCnt).fill(0)
+  const colMaxBody = Array(colCnt).fill(0)
+  rows.forEach((row, r) => row.forEach((cell, c) => {
+    const w = cellContentWidth(cell, measureH)
+    if (w > colMax[c]) colMax[c] = w
+    if (r > 0 && w > colMaxBody[c]) colMaxBody[c] = w
+  }))
+  const colWidths = profileColWidths(prof, colCnt) ?? computeColWidths(colMax, totalW)
+  // 본문 셀이 전부 한 줄에 들어가는 열은 가운데 정렬 (숫자·라벨 열 관행)
+  const colCentered = colWidths.map((w, c) => colMaxBody[c] + CELL_PAD <= w)
+  // 라벨열 감지 — 2열 표에서 1열이 짧은 라벨이면 음영+bold (실측: GT6/GT7 표3 라벨|값 패턴)
+  const labelCol0 = !!reg && colCnt === 2 && colCentered[0] && rows.every((r) => (r[0] ?? "").replace(/\*\*|__|`/g, "").length <= 12)
 
   const tblId = nextTableId()
-  const prof = takeProfile(remap, rowCnt, colCnt, anchorOfMarkdownCell(rows[0]?.[0] ?? ""), seq)
-  // A4 portrait: 폭 약 44000 HWPUnit → 프로필 열폭 우선, 없으면 균등 분배
-  const colW = resolveColWidths(prof, colCnt, 44000)
-  const tblW = colW.reduce((a, b) => a + b, 0)
-  const tblH = cellH * rowCnt
 
   // theme.tableHeaderColor 또는 tableHeaderBold가 설정되면 첫 행 셀에 별도 charPr 사용
+  // (공문서 style이 있으면 style이 우선 — charPr 9는 표 전용 폰트·크기와 어긋난다)
   const useHeaderStyle =
-    theme.tableHeader !== theme.body || theme.tableHeaderBold
+    !style && (theme.tableHeader !== theme.body || theme.tableHeaderBold)
+
+  const mapId = style
+    ? (id: number) => (id === CHAR_NORMAL ? style.charPr : id === CHAR_BOLD ? style.boldCharPr : id)
+    : undefined
+
+  const rowHeights = rows.map((row) => style ? estimateRowHeight(row, colWidths, measureH) : 1500)
 
   const trElements = rows.map((row, rowIdx) => {
     // 부족한 셀은 빈 문자열로 채워 colCnt 맞춤
     const cells = row.length < colCnt ? [...row, ...Array(colCnt - row.length).fill("")] : row
     const isHeaderRow = rowIdx === 0
-    const headerCharPr = isHeaderRow && useHeaderStyle ? CHAR_TABLE_HEADER : CHAR_NORMAL
+    const cellH = rowHeights[rowIdx]
+    const baseCharPr = style ? style.charPr : CHAR_NORMAL
+    const headerCharPr = isHeaderRow && useHeaderStyle ? CHAR_TABLE_HEADER : baseCharPr
     const tdElements = cells.map((cell, colIdx) => {
       const k = `${rowIdx},${colIdx}`
-      const bf = prof?.cellBf.get(k) ?? 2
-      const ch = prof?.cellChar.get(k) ?? headerCharPr
+      const isLabelCell = labelCol0 && colIdx === 0
+      // 헤더행·라벨열은 bold (실측: GT1 표⑪ 헤더 bold, GT6/GT7 라벨열 bold — TBL-05·06)
+      const defaultCharPr = style
+        ? (reg && (isHeaderRow || isLabelCell) ? style.boldCharPr : style.charPr)
+        : (isHeaderRow ? headerCharPr : baseCharPr)
+      const cellCharPr = prof?.cellChar.get(k) ?? defaultCharPr
+      // 셀 문단 — 실측: 헤더·짧은 열 CENTER 130%, 장문 열 LEFT (JUSTIFY 아님, TBL-11)
+      const centered = isHeaderRow || colCentered[colIdx]
+      const paraPrId = style
+        ? (centered ? (style.tblCenterParaPr ?? style.centerParaPr) : (reg ? (style.tblLeftParaPr ?? PARA_NORMAL) : PARA_NORMAL))
+        : PARA_NORMAL
+      // <br>은 kordoc GFM 셀 규약(파서가 셀 내 개행을 <br>로 방출) — 문단 분리로 복원
+      const p = cell.split(/<br\s*\/?>/i).map((seg) => {
+        const runs = generateRuns(seg, cellCharPr, prof?.cellChar.has(k) ? undefined : mapId)
+        return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0">${runs || `<hp:run charPrIDRef="${cellCharPr}"><hp:t></hp:t></hp:run>`}</hp:p>`
+      }).join("")
+      // 테두리 — 프로필 실측 최우선, 다음 위계 레지스트리(TBL-01·02), 폴백 기본
+      const bf = prof?.cellBf.get(k)
+        ?? (reg
+          ? reg.get(dataCellSpec({
+              row: rowIdx, rowEnd: rowIdx, col: colIdx, colEnd: colIdx,
+              rowCnt, colCnt, headerRows: 1,
+              fill: isHeaderRow ? (style!.headerFill ?? "#E6E6E6") : isLabelCell ? (style!.labelFill ?? "#E7E7E7") : undefined,
+            }))
+          : style && isHeaderRow ? style.headerBf : 2)
       const h = prof?.cellH.get(k) ?? cellH
-      const runs = generateRuns(cell, ch)
-      const p = `<hp:p paraPrIDRef="0" styleIDRef="0">${runs}</hp:p>`
       // <hp:tc> 필수 속성 + subList + cellAddr + cellSpan + cellSz + cellMargin
       return `<hp:tc name="" header="${isHeaderRow ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="${bf}">`
-        + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${p}</hp:subList>`
+        + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${style ? "CENTER" : "TOP"}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${p}</hp:subList>`
         + `<hp:cellAddr colAddr="${colIdx}" rowAddr="${rowIdx}"/>`
         + `<hp:cellSpan colSpan="1" rowSpan="1"/>`
-        + `<hp:cellSz width="${colW[colIdx]}" height="${h}"/>`
+        + `<hp:cellSz width="${colWidths[colIdx]}" height="${h}"/>`
         + `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`
         + `</hp:tc>`
     }).join("")
     return `<hp:tr>${tdElements}</hp:tr>`
   }).join("")
+
+  const tblW = colWidths.reduce((a, b) => a + b, 0)
+  const tblH = rowHeights.reduce((a, b) => a + b, 0)
 
   // <hp:tbl>에 필수 속성 + <hp:sz>/<hp:outMargin>/<hp:inMargin> (pos는 inline-level 기준)
   const tblInner = `<hp:sz width="${tblW}" widthRelTo="ABSOLUTE" height="${tblH}" heightRelTo="ABSOLUTE" protect="0"/>`
@@ -79,10 +252,12 @@ export function generateTable(rows: string[][], theme: ResolvedTheme, remap: Pro
     + `<hp:inMargin left="510" right="510" top="141" bottom="141"/>`
     + trElements
 
-  const tbl = `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="0" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="2" noShading="0">${tblInner}</hp:tbl>`
+  // 공문서: 쪽 넘어가면 헤더행 반복 (repeatHeader)
+  const tbl = `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="${style ? 1 : 0}" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="2" noShading="0">${tblInner}</hp:tbl>`
 
-  // 테이블은 paragraph 안의 run → 가 아니라 별도 p로 감쌈 (block-level inline-anchored)
-  return `<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${tbl}</hp:run></hp:p>`
+  // 실측 모드: 데이터 표 호스트 문단 RIGHT (실측: GT6/GT7/GT11 관행, TBL-09)
+  const hostPr = reg && style?.rightParaPr !== undefined ? style.rightParaPr : 0
+  return `<hp:p paraPrIDRef="${hostPr}" styleIDRef="0"><hp:run charPrIDRef="0">${tbl}</hp:run></hp:p>`
 }
 
 // ─── HTML 표 생성 (병합셀 colspan/rowspan + 중첩표 재귀) ───
@@ -138,54 +313,89 @@ function unescapeHtml(s: string): string {
  * subList 안에 재귀 생성한다. 파싱 불가면 null (호출부가 문단 폴백).
  * @param totalWidth 표 전체 폭(HWPUNIT) — 중첩표는 부모 셀폭에 맞춰 축소
  */
-export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, totalWidth: number = 44000, remap: ProfileRemap | null = null, seq = 0): string | null {
+export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, totalWidth: number = 44000, style: GongmunTableStyle | null = null, remap: ProfileRemap | null = null, seq = 0): string | null {
   const rows = parseHtmlTable(rawHtml)
   if (!rows || rows.length === 0) return null
   const { placed, rowCnt, colCnt } = layoutHtmlRows(rows)
   if (rowCnt === 0 || colCnt === 0) return null
 
-  const cellH = 1500
-  const tblId = nextTableId()
+  const measureH = style?.charHeight ?? 1000
+  // 서식 프로필 매칭 (#41)
   const first = placed.find(p => p.r === 0 && p.c === 0) ?? placed[0]
   const prof = takeProfile(remap, rowCnt, colCnt, first ? anchorOfHtmlCell(first.inner) : "", seq)
-  const colW = resolveColWidths(prof, colCnt, totalWidth)
-  const tblW = colW.reduce((a, b) => a + b, 0)
-  const useHeaderStyle = theme.tableHeader !== theme.body || theme.tableHeaderBold
-  // 병합셀 폭 = 점유 열들의 폭 합
-  const spanW = (c: number, colSpan: number): number =>
-    colW.slice(c, c + colSpan).reduce((a, b) => a + b, 0)
 
-  const tcXmls = placed.map(cell => {
+  // 열별 최대 내용폭 — colSpan 셀은 폭/span 만큼 각 열에 기여
+  const colMax = Array(colCnt).fill(0)
+  const colMaxBody = Array(colCnt).fill(0)
+  const cellLines = placed.map((cell) => htmlCellInnerToLines(cell.inner).lines)
+  placed.forEach((cell, i) => {
+    const w = Math.max(...cellLines[i].map((l) => measureTextWidth(unescapeHtml(l).trim(), measureH, 100)), 0) / cell.colSpan
+    for (let dc = 0; dc < cell.colSpan; dc++) {
+      const c = cell.c + dc
+      if (w > colMax[c]) colMax[c] = w
+      if (!cell.isHeader && w > colMaxBody[c]) colMaxBody[c] = w
+    }
+  })
+  const colWidths = profileColWidths(prof, colCnt) ?? computeColWidths(colMax, totalWidth)
+  const colCentered = colWidths.map((w, c) => colMaxBody[c] + CELL_PAD <= w)
+
+  const cellH = style ? Math.round(measureH * 1.6) + 282 : 1500
+  const tblW = colWidths.reduce((a, b) => a + b, 0)
+  const tblId = nextTableId()
+  const useHeaderStyle = !style && (theme.tableHeader !== theme.body || theme.tableHeaderBold)
+  const spanW = (cell: PlacedHtmlCell) => colWidths.slice(cell.c, cell.c + cell.colSpan).reduce((a, b) => a + b, 0)
+
+  const reg = style?.bfRegistry ?? null
+  // 헤더 행 수 — 연속된 th 행 (이중선 경계 판정용)
+  let htmlHeaderRows = 0
+  while (htmlHeaderRows < rows.length && rows[htmlHeaderRows].tag === "th") htmlHeaderRows++
+
+  const tcXmls = placed.map((cell, i) => {
     const k = `${cell.r},${cell.c}`
-    const bf = prof?.cellBf.get(k) ?? 2
-    const headerCharPr = cell.isHeader && useHeaderStyle ? CHAR_TABLE_HEADER : CHAR_NORMAL
-    const ch = prof?.cellChar.get(k) ?? headerCharPr
-    const { lines } = htmlCellInnerToLines(cell.inner)
+    const isHeader = cell.isHeader
+    const baseCharPr = style ? style.charPr : CHAR_NORMAL
+    const headerCharPr = isHeader && useHeaderStyle ? CHAR_TABLE_HEADER : baseCharPr
+    const defaultCharPr = style && reg && isHeader ? style.boldCharPr : isHeader ? headerCharPr : baseCharPr
+    const charPrId = prof?.cellChar.get(k) ?? defaultCharPr
+    const centered = isHeader || colCentered[cell.c]
+    const paraPrId = style
+      ? (centered ? (reg ? (style.tblCenterParaPr ?? style.centerParaPr) : style.centerParaPr) : (reg ? (style.tblLeftParaPr ?? PARA_NORMAL) : PARA_NORMAL))
+      : PARA_NORMAL
+    const lines = cellLines[i]
     const paras: string[] = lines.map(line =>
-      `<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="${ch}"><hp:t>${escapeXml(unescapeHtml(line))}</hp:t></hp:run></hp:p>`,
+      `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t>${escapeXml(unescapeHtml(line))}</hp:t></hp:run></hp:p>`,
     )
-    const cellW = spanW(cell.c, cell.colSpan)
     // 중첩표 — 셀폭(마진 제외)에 맞춰 재귀 생성. 셀 높이는 중첩표만큼 키움
     // (한컴은 자동 확장하지만 초기 높이가 맞아야 다른 뷰어에서도 안 잘림)
     let nestedH = 0
     for (const nested of extractTopLevelTables(cell.inner)) {
-      const nestedXml = generateHtmlTableXml(nested, theme, Math.max(cellW - 1020, 4000))
+      const nestedW = Math.max(spanW(cell) - 1020, 4000)
+      const nestedXml = generateHtmlTableXml(nested, theme, nestedW, style ? { ...style, totalWidth: nestedW } : null)
       if (nestedXml) {
         paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0">${nestedXml}</hp:run></hp:p>`)
         nestedH += ((nested.match(/<tr[\s>]/gi) ?? []).length) * cellH + 300
       }
     }
     if (paras.length === 0) {
-      paras.push(`<hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="${ch}"><hp:t></hp:t></hp:run></hp:p>`)
+      paras.push(`<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${charPrId}"><hp:t></hp:t></hp:run></hp:p>`)
     }
     // 프로필 실측 높이가 있으면 존중하되, 내용(중첩표 등)이 더 크면 확장
-    const contentH = Math.max(cellH * cell.rowSpan, Math.max(lines.length, 1) * 800 + nestedH)
+    const contentH = Math.max(cellH * cell.rowSpan, Math.max(lines.length, 1) * (style ? Math.round(measureH * 1.6) : 800) + nestedH)
     const cellHeight = Math.max(prof?.cellH.get(k) ?? 0, contentH)
-    return `<hp:tc name="" header="${cell.isHeader ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="${bf}">`
-      + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${paras.join("")}</hp:subList>`
+    // 테두리 — 프로필 최우선, 다음 위계(병합 셀은 끝 행·열 기준 — TBL-01·02·03), 폴백 기본
+    const bf = prof?.cellBf.get(k)
+      ?? (reg
+        ? reg.get(dataCellSpec({
+            row: cell.r, rowEnd: cell.r + cell.rowSpan - 1, col: cell.c, colEnd: cell.c + cell.colSpan - 1,
+            rowCnt, colCnt, headerRows: htmlHeaderRows,
+            fill: isHeader ? (style!.headerFill ?? "#E6E6E6") : undefined,
+          }))
+        : style && isHeader ? style.headerBf : 2)
+    return `<hp:tc name="" header="${isHeader ? 1 : 0}" hasMargin="0" protect="0" editable="1" dirty="0" borderFillIDRef="${bf}">`
+      + `<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${style ? "CENTER" : "TOP"}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${paras.join("")}</hp:subList>`
       + `<hp:cellAddr colAddr="${cell.c}" rowAddr="${cell.r}"/>`
       + `<hp:cellSpan colSpan="${cell.colSpan}" rowSpan="${cell.rowSpan}"/>`
-      + `<hp:cellSz width="${cellW}" height="${cellHeight}"/>`
+      + `<hp:cellSz width="${spanW(cell)}" height="${cellHeight}"/>`
       + `<hp:cellMargin left="141" right="141" top="141" bottom="141"/>`
       + `</hp:tc>`
   })
@@ -197,7 +407,7 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
     trXmls.push(`<hp:tr>${rowTcs.join("")}</hp:tr>`)
   }
 
-  return `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="0" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="2" noShading="0">`
+  return `<hp:tbl id="${tblId}" zOrder="0" numberingType="TABLE" pageBreak="CELL" repeatHeader="${style ? 1 : 0}" rowCnt="${rowCnt}" colCnt="${colCnt}" cellSpacing="0" borderFillIDRef="2" noShading="0">`
     + `<hp:sz width="${tblW}" widthRelTo="ABSOLUTE" height="${cellH * rowCnt}" heightRelTo="ABSOLUTE" protect="0"/>`
     + `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="0" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>`
     + `<hp:outMargin left="0" right="0" top="0" bottom="0"/>`
@@ -205,10 +415,3 @@ export function generateHtmlTableXml(rawHtml: string, theme: ResolvedTheme, tota
     + trXmls.join("")
     + `</hp:tbl>`
 }
-
-// ─── 섹션 XML 생성 ──────────────────────────────────
-
-/**
- * 공문서 모드 리스트 사전 처리 — 연속된 list_item run마다 단계별 부호 산출 +
- * 단일 형제 부호 생략. block 인덱스 → {marker, depth} 매핑 반환.
- */

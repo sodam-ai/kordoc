@@ -282,11 +282,11 @@ export function generateRuns(text: string, defaultCharPr: number = CHAR_NORMAL, 
   }).join("")
 }
 
-export function generateParagraph(text: string, paraPrId: number = PARA_NORMAL, charPrId: number = CHAR_NORMAL, mapCharId?: (id: number) => number): string {
+export function generateParagraph(text: string, paraPrId: number = PARA_NORMAL, charPrId: number = CHAR_NORMAL, mapCharId?: (id: number) => number, styleId: number = 0): string {
   if (paraPrId === PARA_CODE) {
     // 코드블록은 인라인 파싱 안 함
     return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0"><hp:run charPrIDRef="${CHAR_CODE}"><hp:t>${escapeXml(text)}</hp:t></hp:run></hp:p>`
   }
   const runs = generateRuns(text, charPrId, mapCharId)
-  return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="0">${runs}</hp:p>`
+  return `<hp:p paraPrIDRef="${paraPrId}" styleIDRef="${styleId}">${runs}</hp:p>`
 }

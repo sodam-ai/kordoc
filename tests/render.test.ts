@@ -96,6 +96,31 @@ describe("render: 조판 캐시 없는 파일 거부", () => {
   })
 })
 
+describe("render: 문단별 줄나눔 wrapMode (breakSetting 이름 역전 매핑)", () => {
+  it("parseRenderStyles — BREAK_WORD→keep(어절) / KEEP_WORD→charAll(글자) / 없음→undefined", async () => {
+    const { parseRenderStyles } = await import("../src/render/head-styles.js")
+    const head = `<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+      <hh:paraPr id="0"><hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="BREAK_WORD"/></hh:paraPr>
+      <hh:paraPr id="1"><hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD"/></hh:paraPr>
+      <hh:paraPr id="2"><hh:align horizontal="LEFT"/></hh:paraPr>
+    </hh:head>`
+    const styles = parseRenderStyles(head)
+    assert.equal(styles.paraGeom.get("0")?.wrapMode, "keep")
+    assert.equal(styles.paraGeom.get("1")?.wrapMode, "charAll")
+    assert.equal(styles.paraGeom.get("2")?.wrapMode, undefined)
+  })
+
+  it("reflow — 문단 breakSetting 선언이 reflowMode 옵션보다 우선", async () => {
+    // 생성 문서는 전 문단 BREAK_WORD(어절) 선언 → charAll 옵션을 줘도 선언이 이겨
+    // 두 렌더가 동일해야 한다 (선언 파싱이 깨지면 줄바꿈점이 달라져 SVG가 달라짐)
+    const md = "대한민국 헌법에 따라 보장되는 기본권과 자유민주적 기본질서를 확인하는 문장을 반복한다. ".repeat(6)
+    const hwpx = await markdownToHwpx(md)
+    const keep = await renderHwpxToSvg(hwpx, { reflow: true, reflowMode: "keep" })
+    const charAll = await renderHwpxToSvg(hwpx, { reflow: true, reflowMode: "charAll" })
+    assert.equal(charAll.svg, keep.svg)
+  })
+})
+
 describe("render: 탭 슬롯 (리뷰 #16)", () => {
   it("hp:tab은 inline 컨트롤 8슬롯 — 1슬롯로 세면 lineseg textpos가 밀린다", () => {
     const xml = `<hp:p xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" paraPrIDRef="0">` +

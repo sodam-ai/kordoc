@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { readFileSync, writeFileSync, realpathSync, openSync, readSync, closeSync, statSync, mkdirSync } from "fs"
 import { resolve, isAbsolute, extname, dirname } from "path"
-import { parse, detectFormat, detectZipFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx, fillHwpx, patchHwpx, patchHwp } from "./index.js"
+import { parse, detectFormat, detectZipFormat, blocksToMarkdown, compare, extractFormFields, fillFormFields, markdownToHwpx, fillHwpx, patchHwpx, patchHwp, unknownFontWarnings } from "./index.js"
 import { fillWithUniqueGuard, type FillInput } from "./form/match.js"
 import type { GongmunOptions } from "./index.js"
 import { VERSION, toArrayBuffer, sanitizeError, KordocError } from "./utils.js"
@@ -700,22 +700,51 @@ server.tool(
 
 server.tool(
   "generate_document",
-  "마크다운을 HWPX 한글 문서로 생성합니다. GFM 표(| 헤더 | … |)·헤딩·리스트·볼드를 한글 문서 요소로 변환하며, 공문서 프리셋 지정 시 행정 표준 서식(항목부호 8단계·공식 여백·명조 15pt)으로 렌더링합니다. 활용: 평문 문장을 표로 구조화해 새 한글파일로 만들거나, parse_document로 읽은 내용을 편집해 다시 HWPX로 출력. (원본 서식을 보존하며 일부 텍스트/표만 제자리 수정하려면 patch_document 사용)",
+  "마크다운을 HWPX 한글 문서로 생성합니다. \"보고서로/공문서로/개조식으로/계획서로 뽑아줘·만들어줘\" 요청이 이 도구입니다. 프리셋 매핑: 정부 표준 보고서(표지·목차·로마숫자 장헤더 자동)='개조식', 기안문·시행문·알림공문='기안문', 1페이지 요약보고서='보고서', 추진계획='계획서'. 표는 실측 정부 서식(헤더 음영+이중선·외곽 굵은선·내용 비례 열폭), 쪽번호·결재란·'끝.' 표시 지원. ⚠ 생성 전 확인 권장: 문서종류(보고서/기안문)·제목·기관명(org)·날짜·목차 여부가 불명확하면 사용자에게 물어보세요 — 엉뚱한 프리셋 선택이 가장 흔한 오생성 원인. 마크다운 규칙: #(h1)=문서 제목(표지), ##(h2)=장(Ⅰ Ⅱ Ⅲ 자동), 리스트 깊이=□ ○ ― ㆍ 부호, ※시작 문단=참고 스타일, <right>텍스트</right>=우측정렬 출처행. (원본 서식 보존 제자리 수정은 patch_document, 서식 빈칸 채우기는 fill_form)",
   {
     markdown: z.string().min(1).describe("HWPX로 변환할 마크다운 전문. 표는 GFM 문법 사용 (예: '| 이름 | 부서 |\\n| --- | --- |\\n| 홍길동 | 기획팀 |')"),
     output_path: z.string().min(1).describe("출력 HWPX 파일의 절대 경로 (.hwpx 권장)"),
-    preset: z.enum(["기안문", "보고서", "계획서", "통지", "회의록", "official", "report", "plan", "notice", "minutes"]).optional()
-      .describe("공문서 프리셋 — 지정 시 한국 행정 공문서 표준 서식 적용. 미지정 시 범용 마크다운 변환"),
+    preset: z.enum(["기안문", "보고서", "계획서", "통지", "회의록", "개조식", "개조식보고서", "정부보고서", "정부표준개조식보고서", "official", "report", "plan", "notice", "minutes", "gaejosik"]).optional()
+      .describe("공문서 프리셋 — 지정 시 한국 행정 공문서 표준 서식 적용. '개조식'=정부 표준 개조식 보고서(표지·목차·로마숫자 장 헤더 자동 + □○―※ 부호별 폰트). 미지정 시 범용 마크다운 변환"),
     font: z.enum(["myeongjo", "gothic"]).optional().describe("본문 글꼴(공문서 모드): myeongjo=함초롬바탕(명조), gothic=맑은 고딕"),
     body_pt: z.number().int().min(6).max(40).optional().describe("본문 글자 크기(pt, 공문서 모드). 기본 15"),
+    org: z.string().optional().describe("표지 기관명(개조식 프리셋 전용). 미지정 시 표지에 기관명 생략"),
+    date: z.string().optional().describe("표지 날짜(개조식 프리셋 전용, 'YYYY. M. D.' 표기 권장). 미지정 시 오늘 날짜"),
+    toc: z.boolean().optional().describe("목차 페이지 생성 여부 — h2 목록을 Ⅰ Ⅱ Ⅲ 장으로 자동 구성. 미지정 시 개조식 프리셋만 켜짐"),
+    cover: z.boolean().optional().describe("표지 페이지 생성 여부 — 첫 h1을 제목으로 파랑 장식 표지. 미지정 시 개조식 프리셋만 켜짐 (org/date 지정 시 자동 켜짐)"),
+    approval: z.array(z.string()).optional().describe("결재란 직위 라벨 (예: ['담당','팀장','과장']) — 문서 최상단 우측에 서명 공란 결재 표 생성"),
+    page_numbers: z.boolean().optional().describe("쪽번호(하단 중앙 '- 1 -', 표지·목차 카운트 제외). 미지정 시 개조식·보고서·계획서 켜짐"),
+    end_mark: z.boolean().optional().describe("본문 끝 '끝.' 표시 (행정업무규정). 미지정 시 기안문만 켜짐, 본문이 이미 '끝.'으로 끝나면 중복 생성 안 함"),
+    body_title_box: z.boolean().optional().describe("본문 첫 페이지 제목 반복 박스 (개조식 실측 관행). 미지정 시 개조식+표지 조합에서 켜짐"),
+    fonts: z.object({
+      body: z.string().optional(), heading: z.string().optional(), ref: z.string().optional(), table: z.string().optional(),
+    }).optional().describe("요소별 글꼴 오버라이드(공문서 모드) — body=본문(개조식 ○·―)/heading=제목 계열(□·장헤더·표지·목차)/ref=※ 참고/table=표 셀. 개조식 외 프리셋은 body만 적용"),
+    sizes: z.object({
+      dae: z.number().min(6).max(60).optional(), cham: z.number().min(6).max(60).optional(),
+      chapter: z.number().min(6).max(60).optional(), coverTitle: z.number().min(6).max(60).optional(),
+      coverSub: z.number().min(6).max(60).optional(), tocLabel: z.number().min(6).max(60).optional(),
+      tocRoman: z.number().min(6).max(60).optional(), tocItem: z.number().min(6).max(60).optional(),
+      table: z.number().min(6).max(60).optional(),
+    }).optional().describe("개조식 요소별 글자 크기(pt) 오버라이드 — dae=□/cham=※/chapter=장헤더/coverTitle·coverSub=표지/tocLabel·tocRoman·tocItem=목차/table=표 셀. 미지정 요소는 body_pt 비례 기본값"),
   },
-  async ({ markdown, output_path, preset, font, body_pt }) => {
+  async ({ markdown, output_path, preset, font, body_pt, org, date, toc, cover, approval, page_numbers, end_mark, body_title_box, fonts, sizes }) => {
     try {
       let gongmun: GongmunOptions | undefined
       if (preset) {
         gongmun = { preset }
         if (font) gongmun.bodyFont = font
         if (body_pt) gongmun.bodyPt = body_pt
+        // cover=false가 최우선(끄기), org/date 지정 시 객체(=켜짐), cover=true는 강제 켜기
+        if (cover === false) gongmun.cover = false
+        else if (org || date) gongmun.cover = { ...(org ? { org } : {}), ...(date ? { date } : {}) }
+        else if (cover === true) gongmun.cover = true
+        if (toc !== undefined) gongmun.toc = toc
+        if (approval && approval.length > 0) gongmun.approval = approval
+        if (page_numbers !== undefined) gongmun.pageNumbers = page_numbers
+        if (end_mark !== undefined) gongmun.endMark = end_mark
+        if (body_title_box !== undefined) gongmun.bodyTitleBox = body_title_box
+        if (fonts) gongmun.fonts = fonts
+        if (sizes) gongmun.sizes = sizes
       }
       const buf = await markdownToHwpx(markdown, gongmun ? { gongmun } : undefined)
       const out = resolve(output_path)
@@ -725,8 +754,11 @@ server.tool(
       const mode = gongmun ? `공문서:${gongmun.preset}` : "범용"
       const tableCount = (markdown.match(/^\s*\|.*\|\s*$/gm) || []).length > 0
         ? `, 표 포함` : ""
+      // 폰트 오버라이드 오타·미설치 경고 (A2) — 생성은 진행, 경고만 병기
+      const fontWarns = gongmun?.fonts ? unknownFontWarnings(gongmun.fonts) : []
+      const warnText = fontWarns.length ? `\n⚠ ${fontWarns.join("\n⚠ ")}` : ""
       return {
-        content: [{ type: "text", text: `✓ HWPX 생성 (${mode}${tableCount}) → ${out}\n크기: ${(buf.byteLength / 1024).toFixed(1)}KB` }],
+        content: [{ type: "text", text: `✓ HWPX 생성 (${mode}${tableCount}) → ${out}\n크기: ${(buf.byteLength / 1024).toFixed(1)}KB${warnText}` }],
       }
     } catch (err) {
       return {

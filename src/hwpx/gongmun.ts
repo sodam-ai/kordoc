@@ -10,11 +10,12 @@
  */
 
 import { charWidthEm1000, SPACE_EM_FIXED } from "./text-metrics.js"
+import { gaejosikMarker, gaejosikLevelIndent, type GaejosikSizeOverrides } from "./gaejosik.js"
 
 // ─── 옵션 타입 ──────────────────────────────────────
 
-export type GongmunPreset = "official" | "report" | "plan" | "notice" | "minutes"
-export type GongmunNumbering = "standard" | "report"
+export type GongmunPreset = "official" | "report" | "plan" | "notice" | "minutes" | "gaejosik"
+export type GongmunNumbering = "standard" | "report" | "gaejosik"
 export type GongmunFont = "myeongjo" | "gothic"
 
 /** 프리셋 입력값 — 영문 키 또는 한글 별칭(기안문·보고서·계획서·통지·회의록 등) */
@@ -25,6 +26,7 @@ export type GongmunPresetInput =
   | "계획서" | "계획"
   | "통지" | "알림" | "안내"
   | "회의록"
+  | "개조식" | "개조식보고서" | "정부보고서" | "정부표준개조식보고서"
 
 /** 공문서 모드 옵션 (전부 선택 — 프리셋 기본값을 개별 override) */
 export interface GongmunOptions {
@@ -36,8 +38,15 @@ export interface GongmunOptions {
   bodyPt?: number
   /** 본문 줄간격(%). 기본 160 (회의록 130) */
   lineSpacing?: number
-  /** 항목부호 체계. 'standard'=법정 8단계(1. 가. 1) …) / 'report'=보고서 불릿(□ ○ - ㆍ) */
+  /** 항목부호 체계. 'standard'=법정 8단계(1. 가. 1) …) / 'report'=보고서 불릿(□ ○ - ㆍ) / 'gaejosik'=개조식(□ ○ ― ㆍ + 부호별 폰트) */
   numbering?: GongmunNumbering
+  /**
+   * 표지 페이지(개조식 프리셋 기본 켜짐) — 첫 h1을 제목으로, 파랑 장식 바 + 날짜 + 기관명.
+   * false로 끄거나 {date, org}로 날짜(기본 오늘, 'YYYY. M. D.')·기관명(기본 생략) 지정.
+   */
+  cover?: boolean | { date?: string; org?: string }
+  /** 목차 페이지(개조식 프리셋 기본 켜짐) — h2 목록을 Ⅰ Ⅱ Ⅲ…로 자동 생성. false로 끔 */
+  toc?: boolean
   /** 용지 여백(mm). 기본 공식값 위20/아래10/좌20/우20 */
   margins?: { top: number; bottom: number; left: number; right: number }
   /** 문서 제목(첫 h1)을 가운데 정렬. 기본 true (행정기관명·보고서 제목) */
@@ -48,6 +57,22 @@ export interface GongmunOptions {
    * false로 끄거나 minRatio(기본 90)로 하한 조정. 기본 켜짐.
    */
   autoFit?: boolean | { minRatio?: number }
+  /**
+   * 요소별 글꼴 오버라이드 — 기관 표준 폰트 적용이나 미설치 폰트 대체용.
+   * body=본문(개조식 ○·―) / heading=제목 계열(□·장헤더·표지·목차) / ref=※ 참고 / table=표 셀.
+   * 개조식 외 프리셋은 body만 적용된다 (bodyFont보다 우선).
+   */
+  fonts?: { body?: string; heading?: string; ref?: string; table?: string }
+  /** 개조식 요소별 글자 크기(pt) 오버라이드 — 미지정 요소는 bodyPt 비례 기본값 */
+  sizes?: GaejosikSizeOverrides
+  /** 쪽번호(하단 중앙 "- 1 -", 표지·목차는 카운트 제외). 기본: 개조식·보고서·계획서 켜짐 */
+  pageNumbers?: boolean
+  /** 본문 끝 2타+"끝." 표시(행정업무규정). 기본: 기안문(official)만 켜짐 */
+  endMark?: boolean
+  /** 결재란 — 직위 라벨 배열(예: ["담당","팀장","과장"]). 문서 최상단 우측 배치 */
+  approval?: string[]
+  /** 본문 첫 페이지 제목 박스(개조식) — 목차 뒤 본문 시작에 제목 반복(실측 관행). 기본: 표지 있으면 켜짐 */
+  bodyTitleBox?: boolean
 }
 
 export interface ResolvedGongmun {
@@ -60,10 +85,34 @@ export interface ResolvedGongmun {
   centerTitle: boolean
   /** 자동 장평 하한(%) — null이면 끔 */
   autoFitMinRatio: number | null
+  /** 표지 설정 — null이면 표지 없음 (개조식 외 프리셋 기본) */
+  cover: { date: string | null; org: string } | null
+  /** 목차 자동 생성 여부 (개조식 프리셋 기본 true) */
+  toc: boolean
+  /** 요소별 글꼴 오버라이드 (GongmunOptions.fonts) */
+  fonts: { body?: string; heading?: string; ref?: string; table?: string }
+  /** 개조식 요소별 크기(pt) 오버라이드 (GongmunOptions.sizes) */
+  sizes: GaejosikSizeOverrides
+  /** 쪽번호(하단 중앙 "- 1 -") — 개조식·보고서·계획서 기본 켜짐 */
+  pageNumbers: boolean
+  /** 머리말·꼬리말 영역(HWPUNIT) — 개조식 4251(15mm, 실측), 그 외 0(편람) */
+  headerFooter: number
+  /** 본문 끝 "끝." 표시 — 기안문(official) 기본 켜짐 (규정) */
+  endMark: boolean
+  /** 결재란 직위 라벨(좌→우) — null이면 결재란 없음 */
+  approval: string[] | null
+  /** 본문 첫 페이지 제목 박스(개조식, 실측 GT3 표④) — 표지 있을 때 기본 켜짐 */
+  bodyTitleBox: boolean
 }
 
 /** 공식 표준 여백(mm) — 편람 서식 작성방법 해설 / 시행규칙 별표4 */
 const OFFICIAL_MARGINS = { top: 20, bottom: 10, left: 20, right: 20 }
+
+/** 개조식 보고서 여백(mm) — 실측: 「2_보고서 양식」·샘플양식1·공고문 공통 상하 15mm */
+const GAEJOSIK_MARGINS = { top: 15, bottom: 15, left: 20, right: 20 }
+
+/** 개조식 머리말·꼬리말 영역(HWPUNIT) — 실측 4251(15mm). 쪽번호가 이 영역에 렌더 */
+const GAEJOSIK_HEADER_FOOTER = 4251
 
 const PRESET_DEFAULTS: Record<
   GongmunPreset,
@@ -74,6 +123,7 @@ const PRESET_DEFAULTS: Record<
   plan: { bodyPt: 15, lineSpacing: 160, numbering: "standard" },
   notice: { bodyPt: 15, lineSpacing: 160, numbering: "standard" },
   minutes: { bodyPt: 14, lineSpacing: 130, numbering: "standard" },
+  gaejosik: { bodyPt: 15, lineSpacing: 160, numbering: "gaejosik" },
 }
 
 /** 프리셋 별칭(한글/영문) → 내부 preset 키. CLI·라이브러리 공용 */
@@ -83,6 +133,7 @@ export const PRESET_ALIAS: Record<string, GongmunPreset> = {
   plan: "plan", 계획서: "plan", 계획: "plan",
   notice: "notice", 통지: "notice", 알림: "notice", 안내: "notice",
   minutes: "minutes", 회의록: "minutes",
+  gaejosik: "gaejosik", 개조식: "gaejosik", 개조식보고서: "gaejosik", 정부보고서: "gaejosik", 정부표준개조식보고서: "gaejosik",
 }
 
 /** 프리셋 입력(영문 키 또는 한글 별칭)을 내부 GongmunPreset로 정규화. 미상은 'official' */
@@ -99,15 +150,31 @@ export function resolveGongmun(opts: GongmunOptions): ResolvedGongmun {
     opts.autoFit === false ? null
     : typeof opts.autoFit === "object" ? Math.min(Math.max(opts.autoFit.minRatio ?? 90, 50), 99)
     : 90
+  // 표지·목차 — 개조식 프리셋만 기본 켜짐. cover.date null이면 렌더 시점의 오늘 날짜
+  const coverOn = opts.cover !== undefined ? opts.cover !== false : preset === "gaejosik"
+  const coverOpts = typeof opts.cover === "object" ? opts.cover : {}
+  const gaejosik = preset === "gaejosik"
   return {
     preset,
     bodyFont: opts.bodyFont ?? "myeongjo",
     bodyHeight: Math.round(bodyPt * 100),
     lineSpacing: opts.lineSpacing ?? d.lineSpacing,
     numbering: opts.numbering ?? d.numbering,
-    margins: opts.margins ?? OFFICIAL_MARGINS,
+    margins: opts.margins ?? (gaejosik ? GAEJOSIK_MARGINS : OFFICIAL_MARGINS),
     centerTitle: opts.centerTitle ?? true,
     autoFitMinRatio,
+    cover: coverOn ? { date: coverOpts.date ?? null, org: coverOpts.org ?? "" } : null,
+    toc: opts.toc ?? gaejosik,
+    fonts: opts.fonts ?? {},
+    sizes: opts.sizes ?? {},
+    // 쪽번호 — 보고서 계열 관행(실측: 2_보고서 양식·추진계획·공고문 전부 하단 중앙)
+    pageNumbers: opts.pageNumbers ?? (gaejosik || preset === "report" || preset === "plan"),
+    headerFooter: gaejosik ? GAEJOSIK_HEADER_FOOTER : 0,
+    // "끝." — 기안문 규정(본문 끝 2타+"끝."). 그 외는 opt-in
+    endMark: opts.endMark ?? preset === "official",
+    approval: opts.approval && opts.approval.length > 0 ? opts.approval : null,
+    // 본문 제목박스 — 실측(GT3·GT12): 목차 뒤 본문 시작에 제목 반복. 표지 켜진 개조식 기본
+    bodyTitleBox: opts.bodyTitleBox ?? (gaejosik && coverOn),
   }
 }
 
@@ -199,7 +266,10 @@ export function levelIndent(
   depth: number,
   bodyHeight: number,
   numbering: GongmunNumbering,
+  sizes: GaejosikSizeOverrides = {},
 ): LevelIndent {
+  // 개조식은 실측 양식의 들여쓰기 체계(□ 0 / ○ 1자 / ― 1.5자 …)를 따른다.
+  if (numbering === "gaejosik") return gaejosikLevelIndent(depth, bodyHeight, sizes)
   // 같은 단계는 부호 종류가 일정하므로 대표 부호(순번 0)의 폭으로 내어쓰기를 정한다.
   const marker = numbering === "report" ? reportMarker(depth) : standardMarker(depth, 0)
   return { left: Math.round(depth * bodyHeight), indent: -markerWidth(marker, bodyHeight) }
@@ -247,6 +317,7 @@ export class GongmunNumberer {
     const n = (this.counts[depth] ?? 0)
     this.counts[depth] = n + 1
     if (suppress) return ""
+    if (this.numbering === "gaejosik") return gaejosikMarker(depth)
     return this.numbering === "report"
       ? reportMarker(depth)
       : standardMarker(depth, n)

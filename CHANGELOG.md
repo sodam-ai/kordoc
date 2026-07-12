@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.6] - 2026-07-12
+
+무음 유실 2건 근본수정 — PDF 무괘선 밴드 표 파편화(예산서 부서명 유실) +
+HWPX 캡션 안 중첩표 텍스트 유실(#46 실파일 재현 확정분).
+
+### Fixed
+
+- **PDF 무괘선 요약행 밴드 표 파편화** (`src/pdf/vertical-bridge.ts` 신규):
+  세출예산 사업명세서류 표는 재원구분(시/구) 요약행 밴드에 수직 괘선을 긋지
+  않아 동일 열 수직선이 위/아래로 끊기고, Union-Find 그룹 파편화로 헤더행·
+  부서/정책 요약행이 그리드에서 탈락 → 부서명이 열 순서 뒤바뀐 추측성 클러스터
+  표로 유실되던 것(광진구 2026 세출예산 전량 실측: 637곳). 끊긴 수직선 쌍을
+  4중 가드(간격 5~120pt·간격 내 수평선 실존·같은 밴드 3열+ 동시 단절·수평선
+  끝점-내부 열 경계 정합)로 브리지해 한 그리드로 복원 — 별개 적층 표·표 사이
+  전폭 구분선은 가드에서 탈락. 합성 세그먼트는 이웃 세그먼트 전체를 덮어
+  cell-extract 단일 세그먼트 75% 커버 판정을 통과(로직 무변경). GT 6쌍 지표
+  기준선과 소수점 동일(오발동 0), 부수 개선: ice-arc-2026 +1,135자·캡션
+  오흡수 102→85·표 내 페이지번호 행 92→82.
+- **HWPX 캡션 안 중첩표 텍스트 통유실 (#46)**: `hp:caption > subList > p >
+  run > hp:tbl` 구조(별지 제9호 서식 실측 — 위치 TOP/BOTTOM 무관)에서 캡션의
+  표 앞 텍스트만 남고 표 내용이 통째로 사라지던 것(304자 중 297자 유실).
+  `collectSubListText`가 문단 내 최상위 tbl을 수집해 표 평탄화 규칙(셀 `" / "`
+  구분·행별 줄바꿈)으로 문서 순서 그대로 이어붙임 — 머리말/꼬리말 내 표도
+  동일하게 유실 대신 보존. 회귀: 캡션 중첩표 TOP/BOTTOM·앞뒤 문단 순서 3건 +
+  PDF 브리지 5건 추가 (테스트 1,034). 제보·최소 재현파일 제공 [@jumaniac](https://github.com/jumaniac),
+  회귀 테스트 설계 조언 [@hiSandog](https://github.com/hiSandog) — 감사합니다.
+
 ## [4.0.5] - 2026-07-12
 
 v4.0.4 플랜 이월 🟡 3건 마감 — 인라인 강조 채널의 외래·gongmun 일반화 +

@@ -7,7 +7,7 @@
  */
 
 import { KordocError, sanitizeHref, stripDtd } from "../utils.js"
-import { MAX_COLS, MAX_ROWS } from "../table/builder.js"
+import { convertTableToText, MAX_COLS, MAX_ROWS } from "../table/builder.js"
 import type { IRBlock, IRCell, IRSpan, IRTable, InlineStyle, ParseWarning } from "../types.js"
 import { hmlToLatex } from "./equation.js"
 import {
@@ -400,14 +400,49 @@ function collectSubListText(el: Node, ctx: WalkCtx, depth = 0): string {
     if (tag === "p" || tag === "para") {
       const t = extractParagraphInfo(ch, ctx.styleMap, ctx).text
       if (t) parts.push(t)
+      // 문단 run 안의 중첩표 (hp:p > hp:run > hp:tbl — HWPX 표준 배치)
+      const tbls: Element[] = []
+      findTopLevelTbls(ch, tbls)
+      for (const tbl of tbls) {
+        const flat = flattenSubListTable(tbl, ctx, depth)
+        if (flat) parts.push(flat)
+      }
     } else if (tag === "tbl") {
-      continue // 캡션/머리말 내 표는 미지원 — 텍스트만 수집
+      const flat = flattenSubListTable(ch, ctx, depth)
+      if (flat) parts.push(flat)
     } else {
       const t = collectSubListText(ch, ctx, depth + 1)
       if (t) parts.push(t)
     }
   }
   return parts.join("\n").trim()
+}
+
+/**
+ * 캡션/머리말 내 중첩표 평탄화 — 셀 텍스트를 표 평탄화 규칙(" / " 구분·행별
+ * 줄바꿈)으로 순서 보존 이어붙임. 스킵하면 캡션 표 내용이 통째로 무음 유실됨 (#46)
+ */
+function flattenSubListTable(el: Element, ctx: WalkCtx, depth: number): string {
+  const sink: IRBlock[] = []
+  const st: TableState = { rows: [], currentRow: [], cell: null }
+  walkSection(el, sink, st, [], ctx, depth + 1)
+  let flat = convertTableToText(st.rows)
+  if (st.caption) flat = st.caption + (flat ? "\n" + flat : "")
+  return flat
+}
+
+/** 노드 하위의 최상위 tbl 수집 — tbl 내부 미진입 (셀 안 중첩표는 표 워커가 처리) */
+function findTopLevelTbls(el: Node, out: Element[], depth = 0): void {
+  if (depth > MAX_XML_DEPTH) return
+  const kids = el.childNodes
+  if (!kids) return
+  for (let i = 0; i < kids.length; i++) {
+    const ch = kids[i] as Element
+    if (ch.nodeType !== 1) continue
+    const tag = (ch.tagName || ch.localName || "").replace(/^[^:]+:/, "")
+    if (tag === "tbl") { out.push(ch); continue }
+    findTopLevelTbls(ch, out, depth + 1)
+  }
 }
 
 /** <p> 내부에서 텍스트가 아닌 구조적 자식만 처리 (tbl, pic, shape). tableCtx 반환으로 상태 전파 */

@@ -201,6 +201,47 @@ describe("hwpx v3 — 표 캡션", () => {
     assert.equal(tableBlock?.table?.caption, "ctrl 래핑 캡션")
   })
 
+  it("캡션 안 중첩표(hp:p > hp:run > hp:tbl)의 셀 텍스트가 평탄화 보존된다 — BOTTOM (#46)", async () => {
+    // 별지 제9호 서식 실측 구조: 캡션 subList에 텍스트 문단 + 표를 담은 문단
+    const innerTbl = `<hp:p id="1" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl rowCnt="2" colCnt="2">` +
+      `<hp:tr>${tc(para("기여분야"), 0, 0)}${tc(para("내 용"), 1, 0)}</hp:tr>` +
+      `<hp:tr>${tc(para("1. 기술마케팅"), 0, 1)}${tc(para("수요기술 발굴에 기여한 자"), 1, 1)}</hp:tr>` +
+      `</hp:tbl></hp:run></hp:p>`
+    const caption = `<hp:caption side="BOTTOM" fullSz="0"><hp:subList>` +
+      `${para("주1) 기여분야")}${innerTbl}</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption, true))))
+
+    const tableBlock = result.blocks.find(b => b.type === "table")
+    assert.equal(tableBlock?.table?.caption,
+      "주1) 기여분야\n기여분야 / 내 용\n1. 기술마케팅 / 수요기술 발굴에 기여한 자",
+      "캡션 앞 텍스트 + 표 평탄화(셀 ' / '·행 줄바꿈) 순서 보존")
+    assert.ok(result.markdown.includes("수요기술 발굴에 기여한 자"), `markdown에도 표 내용 포함: ${result.markdown}`)
+  })
+
+  it("캡션 안 중첩표 — TOP 위치도 동일 보존된다 (#46)", async () => {
+    const innerTbl = `<hp:p id="1" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl rowCnt="1" colCnt="1">` +
+      `<hp:tr>${tc(para("기여율(%) = ⓐ/ⓒ×100"), 0, 0)}</hp:tr>` +
+      `</hp:tbl></hp:run></hp:p>`
+    const caption = `<hp:caption side="TOP"><hp:subList>` +
+      `${para("주3)")}${innerTbl}</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption))))
+
+    const tableBlock = result.blocks.find(b => b.type === "table")
+    assert.equal(tableBlock?.table?.caption, "주3)\n기여율(%) = ⓐ/ⓒ×100")
+  })
+
+  it("캡션 안 중첩표 앞뒤 텍스트 문단의 순서가 보존된다 (#46)", async () => {
+    const innerTbl = `<hp:p id="1" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl rowCnt="1" colCnt="1">` +
+      `<hp:tr>${tc(para("표 내용"), 0, 0)}</hp:tr>` +
+      `</hp:tbl></hp:run></hp:p>`
+    const caption = `<hp:caption side="BOTTOM"><hp:subList>` +
+      `${para("앞 텍스트")}${innerTbl}${para("뒤 텍스트")}</hp:subList></hp:caption>`
+    const result = await parseHwpxDocument(await makeHwpx(sec(wrapTbl(caption, true))))
+
+    const tableBlock = result.blocks.find(b => b.type === "table")
+    assert.equal(tableBlock?.table?.caption, "앞 텍스트\n표 내용\n뒤 텍스트", "문단·표 문서 순서 유지")
+  })
+
   it("활성 표 컨텍스트 밖의 캡션은 무음 드롭 없이 문단으로 보존된다 (#46 방어)", async () => {
     // 캡션이 <tbl> 자식이 아닌 섹션 직계로 존재하는 비정상 파일 — 텍스트가 통째 사라지면 안 됨
     const body = `<hp:p id="0"><hp:run>${para("본문")}</hp:run></hp:p>` +
